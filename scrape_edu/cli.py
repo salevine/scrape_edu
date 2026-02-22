@@ -12,7 +12,7 @@ from scrape_edu.net.http_client import HttpClient
 from scrape_edu.net.rate_limiter import RateLimiter
 from scrape_edu.pipeline.orchestrator import Orchestrator
 from scrape_edu.pipeline.phase_handlers import build_phase_handlers
-from scrape_edu.pipeline.phases import Phase
+from scrape_edu.pipeline.phases import PHASE_ORDER, Phase
 from scrape_edu.utils.logging_setup import setup_logging
 
 
@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--schools", type=str, help="Comma-separated list of school slugs")
     run_parser.add_argument("--phase", type=str, choices=["discovery", "catalog", "faculty", "syllabi"], help="Run only a specific phase")
     run_parser.add_argument("--config", type=Path, help="Path to config YAML file")
+    run_parser.add_argument("--dry-run", action="store_true", help="Show what the pipeline would do without actually scraping")
 
     # --- rescrape command ---
     rescrape_parser = subparsers.add_parser("rescrape", help="Flag schools for re-scraping")
@@ -126,6 +127,17 @@ def cmd_run(args) -> int:
     if args.phase:
         phases_filter = [Phase(args.phase)]
 
+    # --- Dry-run mode: display what would happen and exit ---
+    if getattr(args, "dry_run", False):
+        return _print_dry_run(
+            config=config,
+            schools=schools,
+            schools_filter=schools_filter,
+            phases_filter=phases_filter,
+            output_dir=output_dir,
+            workers=workers,
+        )
+
     # Build networking and scraper components
     rate_limit = config.get("rate_limit", {})
     rate_limiter = RateLimiter(
@@ -179,6 +191,77 @@ def cmd_run(args) -> int:
     if results.get("interrupted", 0):
         print(f"  Interrupted: {results['interrupted']}")
 
+    return 0
+
+
+def _print_dry_run(
+    *,
+    config: dict,
+    schools: list,
+    schools_filter: list[str] | None,
+    phases_filter: list[Phase] | None,
+    output_dir: Path,
+    workers: int,
+) -> int:
+    """Print what the pipeline would do and return 0."""
+    rate_limit = config.get("rate_limit", {})
+    min_delay = rate_limit.get("min_delay", 1.0)
+    max_delay = rate_limit.get("max_delay", 3.0)
+
+    print("=" * 60)
+    print("DRY RUN — no HTTP requests will be made")
+    print("=" * 60)
+
+    # --- Configuration ---
+    print(f"\nConfiguration:")
+    print(f"  Output directory: {output_dir}")
+    print(f"  Workers:          {workers}")
+    print(f"  Rate limit:       {min_delay}–{max_delay}s per request")
+    print(f"  User-agent:       {config.get('user_agent', 'scrape_edu/0.1.0')}")
+    retries = config.get("retries", 3)
+    print(f"  Max retries:      {retries}")
+
+    # --- Phases ---
+    phases = phases_filter if phases_filter else PHASE_ORDER
+    print(f"\nPhases to run ({len(phases)}):")
+    for phase in phases:
+        print(f"  - {phase.value}")
+
+    # --- Schools ---
+    if schools_filter:
+        # Filter the school list to only matching slugs
+        slug_set = set(schools_filter)
+        filtered = [s for s in schools if s.slug in slug_set]
+        # Also note any slugs that didn't match loaded schools
+        loaded_slugs = {s.slug for s in schools}
+        unknown = [slug for slug in schools_filter if slug not in loaded_slugs]
+        school_list = filtered
+        print(f"\nSchools to process ({len(filtered)} of {len(schools)} loaded, filtered by --schools):")
+        if unknown:
+            print(f"  WARNING: {len(unknown)} slug(s) not found in IPEDS data: {', '.join(unknown)}")
+    else:
+        school_list = schools
+        print(f"\nSchools to process ({len(schools)}):")
+
+    max_display = 20
+    for school in school_list[:max_display]:
+        print(f"  - {school.slug} ({school.name})")
+    if len(school_list) > max_display:
+        print(f"  ... and {len(school_list) - max_display} more")
+
+    # --- Manifest status (if one exists) ---
+    manifest_path = output_dir / "manifest.json"
+    if manifest_path.exists():
+        manifest = ManifestManager(output_dir)
+        summary = manifest.get_summary()
+        print(f"\nExisting manifest status:")
+        for status, count in sorted(summary.items()):
+            print(f"  {status}: {count}")
+        print(f"  total: {sum(summary.values())}")
+    else:
+        print(f"\nNo existing manifest found (first run).")
+
+    print()
     return 0
 
 
