@@ -102,13 +102,14 @@ def load_schools(
     hd_cols = ["UNITID", "INSTNM", "WEBADDR", "CITY", "STABBR", "ICLEVEL"]
     hd_df = pd.read_csv(
         hd_path,
-        usecols=lambda c: c.upper() in {col.upper() for col in hd_cols},
-        encoding="latin-1",
+        usecols=lambda c: c.strip("\ufeff").upper() in {col.upper() for col in hd_cols},
+        encoding="utf-8-sig",
+        encoding_errors="replace",
         dtype=str,
         low_memory=False,
     )
-    # Normalize column names to uppercase
-    hd_df.columns = hd_df.columns.str.upper()
+    # Normalize column names to uppercase (and strip any residual BOM)
+    hd_df.columns = hd_df.columns.str.strip("\ufeff").str.upper()
 
     # Filter to 4-year institutions (ICLEVEL == 1)
     hd_df["ICLEVEL"] = pd.to_numeric(hd_df["ICLEVEL"], errors="coerce")
@@ -119,12 +120,13 @@ def load_schools(
     c_cols = ["UNITID", "CIPCODE", "AWLEVEL"]
     c_df = pd.read_csv(
         c_path,
-        usecols=lambda c: c.upper() in {col.upper() for col in c_cols},
-        encoding="latin-1",
+        usecols=lambda c: c.strip("\ufeff").upper() in {col.upper() for col in c_cols},
+        encoding="utf-8-sig",
+        encoding_errors="replace",
         dtype=str,
         low_memory=False,
     )
-    c_df.columns = c_df.columns.str.upper()
+    c_df.columns = c_df.columns.str.strip("\ufeff").str.upper()
 
     # Filter to CS/DS CIP codes
     cs_mask = c_df["CIPCODE"].str.startswith(_CS_CIP_PREFIX)
