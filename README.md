@@ -46,8 +46,8 @@ The scraper uses IPEDS/NCES data to build its list of US universities with CS/DS
 python scripts/download_ipeds.py
 ```
 This downloads two CSV files from [NCES](https://nces.ed.gov/ipeds/use-the-data):
-- **Institutional Characteristics (HD)** — School names, URLs, locations, types
-- **Completions (C)** — Degree awards by CIP code (used to filter to CS/DS programs)
+- **Institutional Characteristics (HD)** -- School names, URLs, locations, types
+- **Completions (C)** -- Degree awards by CIP code (used to filter to CS/DS programs)
 
 Files are saved to `data/ipeds/` (gitignored).
 
@@ -70,8 +70,11 @@ Priority: CLI flags > `.env` > `config/default.yaml`
 ## Usage
 
 ```bash
-# Check how many schools are loaded
+# Check how many schools are loaded and manifest status
 python -m scrape_edu status
+
+# Preview what the pipeline would do (no HTTP requests)
+python -m scrape_edu run --dry-run
 
 # Run full pipeline with default settings (5 workers)
 python -m scrape_edu run
@@ -85,14 +88,20 @@ python -m scrape_edu run --schools "mit,stanford,cmu"
 # Run only the discovery phase (find department pages, don't download yet)
 python -m scrape_edu run --phase discovery
 
+# Dry-run with filters to verify before a long run
+python -m scrape_edu run --schools "mit,stanford" --phase catalog --dry-run
+
 # Flag specific schools for re-scraping
 python -m scrape_edu rescrape --schools "mit"
 
 # Flag ALL schools for re-scraping
 python -m scrape_edu rescrape --all
 
-# Analyze progress
+# Analyze progress (status breakdown, errors, disk usage)
 python scripts/analyze_manifest.py
+
+# Analyze with JSON output for scripting
+python scripts/analyze_manifest.py --json
 ```
 
 ## Output Structure
@@ -109,6 +118,23 @@ output/
 │   └── ...
 ```
 
+## Architecture
+
+The pipeline processes each school through five phases in order:
+
+1. **Robots** -- Fetch and log `robots.txt` (informational only, does not block scraping)
+2. **Discovery** -- Use Serper.dev to search for CS/DS catalog, faculty, and syllabus URLs
+3. **Catalog** -- Download course catalog pages (PDF direct download or HTML rendered to PDF via Playwright)
+4. **Faculty** -- Download faculty directory HTML and parse to JSON (best-effort)
+5. **Syllabi** -- Find and download syllabus PDFs from discovered URLs and faculty pages
+
+Key design decisions:
+- **Threading**: `ThreadPoolExecutor` with configurable workers (default 5). Each worker processes one school at a time through all phases.
+- **Rate limiting**: Per-domain delays (1-3s configurable) prevent overwhelming any single server. Thread-safe with per-domain locks.
+- **Resumability**: Manifest-based. Schools are claimed atomically (PENDING -> SCRAPING). On crash, SCRAPING schools are reset to PENDING on restart. Completed phases are skipped.
+- **Graceful shutdown**: SIGINT handler sets a shutdown event. Workers finish their current phase and stop. Resume picks up where it left off.
+- **Atomic writes**: All file writes use a temp-file + `os.replace` pattern to prevent corruption from crashes.
+
 ## Resumability
 
 The scraper automatically picks up where it left off:
@@ -120,6 +146,28 @@ The scraper automatically picks up where it left off:
 - Use `python -m scrape_edu rescrape --schools "mit"` to force re-scrape specific schools
 - Use `python -m scrape_edu rescrape --all` to re-scrape everything
 
+## Analyzing Results
+
+The `scripts/analyze_manifest.py` script provides a comprehensive analysis of scraping progress:
+
+```bash
+# Human-readable summary
+python scripts/analyze_manifest.py
+
+# Point at a different output directory
+python scripts/analyze_manifest.py --output-dir /path/to/output
+
+# JSON output for programmatic use
+python scripts/analyze_manifest.py --json
+```
+
+The analysis includes:
+- School status breakdown (pending, completed, failed, etc.)
+- Per-phase completion rates
+- Error summary with the top 5 most common errors
+- File counts by type (PDF, HTML, JSON)
+- Total disk usage
+
 ## Cost Estimate
 
 | Scale | Serper Queries | Cost |
@@ -127,6 +175,56 @@ The scraper automatically picks up where it left off:
 | 50 test schools | ~100 | Free tier |
 | 1,250 schools | ~2,500 | Free tier (exhausts it) |
 | All ~4,000 schools | ~8,000 | ~$8 on paid tier |
+
+## Development
+
+### Project Structure
+
+```
+scrape_edu/
+├── cli.py                  # CLI entry point (run, status, rescrape)
+├── config.py               # Layered config (YAML + .env + CLI)
+├── data/
+│   ├── school.py           # School dataclass
+│   ├── ipeds_loader.py     # IPEDS CSV loading and filtering
+│   ├── manifest.py         # Thread-safe manifest + per-school metadata
+│   └── models.py           # Pydantic models (FacultyMember, CatalogEntry, etc.)
+├── net/
+│   ├── rate_limiter.py     # Per-domain rate limiting
+│   └── http_client.py      # HTTP client with retries
+├── browser/
+│   ├── playwright_pool.py  # Browser context pool
+│   └── renderer.py         # HTML-to-PDF rendering
+├── discovery/
+│   ├── serper_search.py    # Serper.dev API client
+│   ├── url_classifier.py   # URL categorization (catalog/faculty/syllabus)
+│   └── homepage_crawler.py # BFS fallback crawler
+├── scrapers/
+│   ├── base.py             # Abstract base scraper
+│   ├── robots_checker.py   # robots.txt fetcher
+│   ├── catalog_scraper.py  # Course catalog downloader
+│   ├── faculty_scraper.py  # Faculty page downloader + parser
+│   └── syllabus_scraper.py # Syllabus finder + downloader
+├── pipeline/
+│   ├── phases.py           # Phase enum and ordering
+│   ├── school_worker.py    # Per-school phase runner
+│   ├── orchestrator.py     # Thread pool + progress reporting
+│   └── phase_handlers.py   # Phase handler factory
+└── utils/
+    ├── slug.py             # University name -> filesystem slug
+    ├── logging_setup.py    # Structured JSON logging
+    ├── url_utils.py        # URL normalization
+    └── file_utils.py       # Atomic file writes
+```
+
+### Running Tests
+
+```bash
+source .venv/bin/activate
+python -m pytest                    # Run all tests
+python -m pytest --tb=short -q      # Compact output
+python -m pytest tests/test_cli.py  # Run specific test file
+```
 
 ## Troubleshooting
 

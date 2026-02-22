@@ -11,8 +11,6 @@ from unittest.mock import patch
 import pytest
 
 # Import the module under test from scripts/ directory.
-import importlib
-
 _scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
@@ -188,6 +186,8 @@ class TestAnalyze:
         assert result["error_summary"]["total_errors"] == 0
         assert result["error_summary"]["top_errors"] == []
         assert result["error_summary"]["schools_with_errors"] == []
+        assert result["file_counts"]["total_files"] == 0
+        assert result["file_counts"]["by_extension"] == {}
 
     def test_school_status_breakdown(self, tmp_path: Path) -> None:
         """Status counts are correctly computed."""
@@ -299,6 +299,39 @@ class TestAnalyze:
         assert result["school_statuses"]["pending"] == 1
         assert result["phase_completion"] == {}
         assert result["error_summary"]["total_errors"] == 0
+
+    def test_file_counts(self, tmp_path: Path) -> None:
+        """File counts include totals and by-extension breakdown."""
+        _write_manifest(tmp_path, {
+            "mit": _make_school_entry("completed"),
+        })
+        school_dir = tmp_path / "mit"
+        school_dir.mkdir(exist_ok=True)
+        (school_dir / "metadata.json").write_text("{}")
+        catalog_dir = school_dir / "catalog"
+        catalog_dir.mkdir()
+        (catalog_dir / "course1.pdf").write_bytes(b"pdf1")
+        (catalog_dir / "course2.pdf").write_bytes(b"pdf2")
+        faculty_dir = school_dir / "faculty"
+        faculty_dir.mkdir()
+        (faculty_dir / "page.html").write_bytes(b"<html>")
+        (faculty_dir / "data.json").write_text("{}")
+
+        result = analyze_manifest.analyze(tmp_path)
+        fc = result["file_counts"]
+        assert fc["total_files"] == 5  # 1 metadata + 2 pdf + 1 html + 1 json
+        assert fc["by_extension"][".pdf"] == 2
+        assert fc["by_extension"][".html"] == 1
+        assert fc["by_extension"][".json"] == 2
+
+    def test_file_counts_empty(self, tmp_path: Path) -> None:
+        """File counts are zero when no school directories exist."""
+        _write_manifest(tmp_path, {
+            "mit": _make_school_entry("pending"),
+        })
+        result = analyze_manifest.analyze(tmp_path)
+        assert result["file_counts"]["total_files"] == 0
+        assert result["file_counts"]["by_extension"] == {}
 
     def test_disk_usage(self, tmp_path: Path) -> None:
         """Disk usage is computed for the output directory."""

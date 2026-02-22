@@ -167,6 +167,22 @@ def analyze(output_dir: Path) -> dict:
         for msg, count in error_counter.most_common(5)
     ]
 
+    # --- File counts ---
+    file_counts: Counter[str] = Counter()
+    total_files = 0
+    for slug in schools:
+        school_dir = output_dir / slug
+        if not school_dir.is_dir():
+            continue
+        for dirpath, _dirnames, filenames in os.walk(school_dir):
+            for filename in filenames:
+                total_files += 1
+                ext = os.path.splitext(filename)[1].lower()
+                if ext:
+                    file_counts[ext] += 1
+                else:
+                    file_counts["(no ext)"] += 1
+
     # --- Disk usage ---
     total_bytes = get_dir_size(output_dir)
 
@@ -179,6 +195,10 @@ def analyze(output_dir: Path) -> dict:
             "total_errors": len(all_errors),
             "top_errors": top_errors,
             "schools_with_errors": sorted(schools_with_errors),
+        },
+        "file_counts": {
+            "total_files": total_files,
+            "by_extension": dict(file_counts.most_common()),
         },
         "disk_usage": {
             "total_bytes": total_bytes,
@@ -225,6 +245,13 @@ def print_human_readable(result: dict) -> None:
         print(f"  Schools with errors ({len(err['schools_with_errors'])}):")
         for slug in err["schools_with_errors"]:
             print(f"    - {slug}")
+
+    # File counts
+    fc = result["file_counts"]
+    print(f"\nFiles: {fc['total_files']} total")
+    if fc["by_extension"]:
+        for ext, count in fc["by_extension"].items():
+            print(f"  {ext:<10s} {count:>5d}")
 
     # Disk usage
     disk = result["disk_usage"]
