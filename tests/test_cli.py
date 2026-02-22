@@ -132,76 +132,104 @@ class TestCmdStatus:
 
 
 class TestCmdRun:
-    """Test the 'run' subcommand argument parsing."""
+    """Test the 'run' subcommand."""
 
-    def test_run_default(self, capsys, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "workers: 5\nlogging:\n  level: WARNING\n"
+    def _make_config(self, tmp_path: Path, **overrides) -> Path:
+        """Create a config file pointing at tmp dirs."""
+        ipeds_dir = tmp_path / "ipeds"
+        ipeds_dir.mkdir(exist_ok=True)
+        output_dir = tmp_path / "output"
+        content = (
+            f"ipeds_dir: '{ipeds_dir}'\n"
+            f"output_dir: '{output_dir}'\n"
+            "workers: 5\n"
+            "logging:\n  level: WARNING\n"
         )
+        for k, v in overrides.items():
+            content += f"{k}: {v}\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(content)
+        return config_file
 
+    def test_run_no_ipeds_data(self, capsys, tmp_path: Path) -> None:
+        """Run without IPEDS data shows helpful error."""
+        config_file = self._make_config(tmp_path)
+        result = main(["run", "--config", str(config_file)])
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "IPEDS data not found" in captured.out
+
+    @patch("scrape_edu.cli.Orchestrator")
+    @patch("scrape_edu.cli.load_schools")
+    def test_run_default(self, mock_load, mock_orch_cls, capsys, tmp_path: Path) -> None:
+        mock_load.return_value = []
+        mock_orch = mock_orch_cls.return_value
+        mock_orch.run.return_value = {"completed": 0, "failed": 0, "skipped": 0}
+
+        config_file = self._make_config(tmp_path)
         result = main(["run", "--config", str(config_file)])
         assert result == 0
+        mock_orch_cls.assert_called_once()
+        assert mock_orch_cls.call_args.kwargs["workers"] == 5
 
-        captured = capsys.readouterr()
-        assert "Pipeline not yet implemented" in captured.out
-        assert "workers=5" in captured.out
+    @patch("scrape_edu.cli.Orchestrator")
+    @patch("scrape_edu.cli.load_schools")
+    def test_run_with_workers(self, mock_load, mock_orch_cls, capsys, tmp_path: Path) -> None:
+        mock_load.return_value = []
+        mock_orch = mock_orch_cls.return_value
+        mock_orch.run.return_value = {"completed": 0, "failed": 0, "skipped": 0}
 
-    def test_run_with_workers(self, capsys, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "workers: 5\nlogging:\n  level: WARNING\n"
-        )
-
+        config_file = self._make_config(tmp_path)
         result = main(["run", "--workers", "8", "--config", str(config_file)])
         assert result == 0
+        assert mock_orch_cls.call_args.kwargs["workers"] == 8
 
-        captured = capsys.readouterr()
-        assert "workers=8" in captured.out
+    @patch("scrape_edu.cli.Orchestrator")
+    @patch("scrape_edu.cli.load_schools")
+    def test_run_with_schools_filter(self, mock_load, mock_orch_cls, capsys, tmp_path: Path) -> None:
+        mock_load.return_value = []
+        mock_orch = mock_orch_cls.return_value
+        mock_orch.run.return_value = {"completed": 0, "failed": 0, "skipped": 0}
 
-    def test_run_with_schools_filter(self, capsys, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("logging:\n  level: WARNING\n")
-
+        config_file = self._make_config(tmp_path)
         result = main(["run", "--schools", "mit,stanford", "--config", str(config_file)])
         assert result == 0
+        call_kwargs = mock_orch.run.call_args.kwargs
+        assert call_kwargs["schools_filter"] == ["mit", "stanford"]
 
-        captured = capsys.readouterr()
-        assert "mit,stanford" in captured.out
+    @patch("scrape_edu.cli.Orchestrator")
+    @patch("scrape_edu.cli.load_schools")
+    def test_run_with_phase_filter(self, mock_load, mock_orch_cls, capsys, tmp_path: Path) -> None:
+        from scrape_edu.pipeline.phases import Phase
+        mock_load.return_value = []
+        mock_orch = mock_orch_cls.return_value
+        mock_orch.run.return_value = {"completed": 0, "failed": 0, "skipped": 0}
 
-    def test_run_with_phase_filter(self, capsys, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("logging:\n  level: WARNING\n")
-
+        config_file = self._make_config(tmp_path)
         result = main(["run", "--phase", "discovery", "--config", str(config_file)])
         assert result == 0
-
-        captured = capsys.readouterr()
-        assert "Phase filter: discovery" in captured.out
+        call_kwargs = mock_orch.run.call_args.kwargs
+        assert call_kwargs["phases_filter"] == [Phase.DISCOVERY]
 
     def test_run_invalid_phase_rejected(self) -> None:
         """An invalid --phase value should cause argparse to error."""
         with pytest.raises(SystemExit) as exc_info:
             main(["run", "--phase", "invalid_phase"])
-        assert exc_info.value.code == 2  # argparse error exit code
+        assert exc_info.value.code == 2
 
-    def test_run_all_options(self, capsys, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("logging:\n  level: WARNING\n")
+    @patch("scrape_edu.cli.Orchestrator")
+    @patch("scrape_edu.cli.load_schools")
+    def test_run_shows_results(self, mock_load, mock_orch_cls, capsys, tmp_path: Path) -> None:
+        mock_load.return_value = []
+        mock_orch = mock_orch_cls.return_value
+        mock_orch.run.return_value = {"completed": 3, "failed": 1, "skipped": 0}
 
-        result = main([
-            "run",
-            "--workers", "12",
-            "--schools", "mit,cmu",
-            "--phase", "catalog",
-            "--config", str(config_file),
-        ])
+        config_file = self._make_config(tmp_path)
+        result = main(["run", "--config", str(config_file)])
         assert result == 0
-
         captured = capsys.readouterr()
-        assert "workers=12" in captured.out
-        assert "mit,cmu" in captured.out
-        assert "catalog" in captured.out
+        assert "Completed: 3" in captured.out
+        assert "Failed:    1" in captured.out
 
 
 # ======================================================================

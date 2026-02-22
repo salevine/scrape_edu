@@ -7,6 +7,8 @@ from pathlib import Path
 from scrape_edu.config import load_config
 from scrape_edu.data.ipeds_loader import load_schools
 from scrape_edu.data.manifest import ManifestManager
+from scrape_edu.pipeline.orchestrator import Orchestrator
+from scrape_edu.pipeline.phases import Phase
 from scrape_edu.utils.logging_setup import setup_logging
 
 
@@ -95,14 +97,50 @@ def cmd_run(args) -> int:
         config_path=getattr(args, "config", None),
         cli_overrides=cli_overrides,
     )
-    logger = setup_logging(level=config.get("logging", {}).get("level", "INFO"))
+    setup_logging(level=config.get("logging", {}).get("level", "INFO"))
 
-    print("Pipeline not yet implemented (coming in Phase 4).")
-    print(f"Config: workers={config.get('workers', 5)}")
+    ipeds_dir = Path(config.get("ipeds_dir", "./data/ipeds"))
+    output_dir = Path(config.get("output_dir", "./output"))
+    workers = config.get("workers", 5)
+
+    # Load schools
+    try:
+        schools = load_schools(ipeds_dir)
+    except FileNotFoundError as e:
+        print(f"IPEDS data not found: {e}")
+        print("Run 'python scripts/download_ipeds.py' to download IPEDS data.")
+        return 1
+
+    print(f"Loaded {len(schools)} schools")
+
+    # Parse filters
+    schools_filter = None
     if args.schools:
-        print(f"Schools filter: {args.schools}")
+        schools_filter = [s.strip() for s in args.schools.split(",")]
+
+    phases_filter = None
     if args.phase:
-        print(f"Phase filter: {args.phase}")
+        phases_filter = [Phase(args.phase)]
+
+    # Run pipeline
+    orchestrator = Orchestrator(
+        schools=schools,
+        output_dir=output_dir,
+        config=config,
+        workers=workers,
+    )
+
+    results = orchestrator.run(
+        schools_filter=schools_filter,
+        phases_filter=phases_filter,
+    )
+
+    print(f"\nPipeline complete:")
+    print(f"  Completed: {results.get('completed', 0)}")
+    print(f"  Failed:    {results.get('failed', 0)}")
+    print(f"  Skipped:   {results.get('skipped', 0)}")
+    if results.get("interrupted", 0):
+        print(f"  Interrupted: {results['interrupted']}")
 
     return 0
 
