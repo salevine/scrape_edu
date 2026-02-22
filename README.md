@@ -10,7 +10,7 @@ Multi-threaded Python scraper that collects CS and Data Science course catalogs,
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/scrape_edu.git
+git clone https://github.com/salevine/scrape_edu.git
 cd scrape_edu
 python -m venv .venv
 source .venv/bin/activate  # macOS/Linux
