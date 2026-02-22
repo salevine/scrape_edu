@@ -21,26 +21,25 @@ from pathlib import Path
 import requests
 
 
-# NCES IPEDS data file URL patterns
-# These are provisional URLs -- NCES may change them between releases.
-IPEDS_BASE_URL = "https://nces.ed.gov/ipeds/tablefiles/zipfiles"
+# NCES IPEDS data-generator endpoint (returns zip files containing CSVs).
+IPEDS_BASE_URL = "https://nces.ed.gov/ipeds/data-generator"
 
 FILES = {
     "hd": {
         "description": "Institutional Characteristics",
-        "pattern": "HD{year}.zip",
+        "tableName": "HD{year}",
         "csv_pattern": "hd{year}.csv",
     },
     "c": {
         "description": "Completions",
-        "pattern": "C{year}_A.zip",
+        "tableName": "C{year}_A",
         "csv_pattern": "c{year}_a.csv",
     },
 }
 
 # Years to attempt, in order of preference.  NCES sometimes lags a year
 # behind, so we try several.
-FALLBACK_YEARS = (2023, 2022, 2021)
+FALLBACK_YEARS = (2024, 2023, 2022)
 
 # Timeout for HTTP requests (seconds).
 REQUEST_TIMEOUT = 120
@@ -174,10 +173,10 @@ def _try_download_file(
     Returns the CSV bytes on success, or ``None`` if the download fails
     (e.g. 404).
     """
-    zip_name = file_info["pattern"].format(year=year)
+    table_name = file_info["tableName"].format(year=year)
     csv_name = file_info["csv_pattern"].format(year=year)
-    url = f"{IPEDS_BASE_URL}/{zip_name}"
-    description = f"{file_info['description']} ({zip_name})"
+    url = f"{IPEDS_BASE_URL}?year={year}&tableName={table_name}&HasRV=0&type=csv"
+    description = f"{file_info['description']} ({table_name})"
 
     try:
         zip_bytes = download_file(url, description)
@@ -270,8 +269,8 @@ def main() -> None:
     parser.add_argument(
         "--year",
         type=int,
-        default=2023,
-        help="IPEDS survey year (default: 2023)",
+        default=2024,
+        help="IPEDS survey year (default: 2024)",
     )
     parser.add_argument(
         "--output-dir",

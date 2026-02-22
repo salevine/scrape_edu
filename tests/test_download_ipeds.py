@@ -194,18 +194,18 @@ class TestDownloadIpeds:
         hd_csv = b"UNITID,INSTNM\n100001,Test U\n"
         c_csv = b"UNITID,CIPCODE,AWLEVEL\n100001,11.0101,5\n"
 
-        hd_zip_2022 = _make_zip("hd2022.csv", hd_csv)
-        c_zip_2022 = _make_zip("c2022_a.csv", c_csv)
+        hd_zip_2023 = _make_zip("hd2023.csv", hd_csv)
+        c_zip_2023 = _make_zip("c2023_a.csv", c_csv)
 
-        # For HD: first call (2023) fails with HTTPError, second (2022) succeeds
-        # For C: first call (2023) fails with HTTPError, second (2022) succeeds
+        # For HD: first call (2024) fails with HTTPError, second (2023) succeeds
+        # For C: first call (2024) fails with HTTPError, second (2023) succeeds
         http_error = requests.HTTPError(response=MagicMock(status_code=404))
 
         mock_dl.side_effect = [
-            http_error,          # HD 2023 fails
-            hd_zip_2022,         # HD 2022 succeeds
-            http_error,          # C 2023 fails
-            c_zip_2022,          # C 2022 succeeds
+            http_error,          # HD 2024 fails
+            hd_zip_2023,         # HD 2023 succeeds
+            http_error,          # C 2024 fails
+            c_zip_2023,          # C 2023 succeeds
         ]
 
         # We need to patch _try_download_file differently since download_file
@@ -214,15 +214,15 @@ class TestDownloadIpeds:
         # test via download_ipeds with _try_download_file patched.
         with patch.object(download_ipeds, "_try_download_file") as mock_try:
             mock_try.side_effect = [
-                None,       # HD 2023 fails
-                hd_csv,     # HD 2022 succeeds
-                None,       # C 2023 fails
-                c_csv,      # C 2022 succeeds
+                None,       # HD 2024 fails
+                hd_csv,     # HD 2023 succeeds
+                None,       # C 2024 fails
+                c_csv,      # C 2023 succeeds
             ]
-            download_ipeds.download_ipeds(2023, tmp_path)
+            download_ipeds.download_ipeds(2024, tmp_path)
 
-        assert (tmp_path / "hd2022.csv").read_bytes() == hd_csv
-        assert (tmp_path / "c2022_a.csv").read_bytes() == c_csv
+        assert (tmp_path / "hd2023.csv").read_bytes() == hd_csv
+        assert (tmp_path / "c2023_a.csv").read_bytes() == c_csv
 
     @patch("download_ipeds._try_download_file")
     def test_all_years_fail_exits(
@@ -265,7 +265,7 @@ class TestMain:
 
         mock_download.assert_called_once()
         args = mock_download.call_args
-        assert args[0][0] == 2023
+        assert args[0][0] == 2024
         assert args[0][1] == Path("data/ipeds")
 
     @patch("download_ipeds.download_ipeds")
