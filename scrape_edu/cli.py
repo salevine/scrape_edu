@@ -7,7 +7,11 @@ from pathlib import Path
 from scrape_edu.config import load_config
 from scrape_edu.data.ipeds_loader import load_schools
 from scrape_edu.data.manifest import ManifestManager
+from scrape_edu.discovery.serper_search import SerperClient
+from scrape_edu.net.http_client import HttpClient
+from scrape_edu.net.rate_limiter import RateLimiter
 from scrape_edu.pipeline.orchestrator import Orchestrator
+from scrape_edu.pipeline.phase_handlers import build_phase_handlers
 from scrape_edu.pipeline.phases import Phase
 from scrape_edu.utils.logging_setup import setup_logging
 
@@ -122,18 +126,51 @@ def cmd_run(args) -> int:
     if args.phase:
         phases_filter = [Phase(args.phase)]
 
+    # Build networking and scraper components
+    rate_limit = config.get("rate_limit", {})
+    rate_limiter = RateLimiter(
+        min_delay=rate_limit.get("min_delay", 1.0),
+        max_delay=rate_limit.get("max_delay", 3.0),
+    )
+    http_client = HttpClient(
+        rate_limiter=rate_limiter,
+        user_agent=config.get("user_agent", "scrape_edu/0.1.0"),
+        timeout=(
+            config.get("timeouts", {}).get("connect", 10),
+            config.get("timeouts", {}).get("read", 30),
+        ),
+        max_retries=config.get("retries", 3),
+    )
+
+    # Set up Serper client if API key is available
+    api_key = config.get("search", {}).get("api_key", "")
+    serper_client = SerperClient(api_key=api_key) if api_key else None
+    if not serper_client:
+        print("Warning: No SERPER_API_KEY set. Discovery will be limited.")
+
+    # Build phase handlers
+    phase_handlers = build_phase_handlers(
+        http_client=http_client,
+        config=config,
+        serper_client=serper_client,
+    )
+
     # Run pipeline
     orchestrator = Orchestrator(
         schools=schools,
         output_dir=output_dir,
         config=config,
         workers=workers,
+        phase_handlers=phase_handlers,
     )
 
-    results = orchestrator.run(
-        schools_filter=schools_filter,
-        phases_filter=phases_filter,
-    )
+    try:
+        results = orchestrator.run(
+            schools_filter=schools_filter,
+            phases_filter=phases_filter,
+        )
+    finally:
+        http_client.close()
 
     print(f"\nPipeline complete:")
     print(f"  Completed: {results.get('completed', 0)}")
