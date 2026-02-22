@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,14 @@ class Orchestrator:
         self.workers = workers
         self.phase_handlers = phase_handlers or {}
         self.shutdown_event = threading.Event()
+
+        # Progress tracking (thread-safe)
+        self._progress_lock = threading.Lock()
+        self._done_count = 0
+        self._fail_count = 0
+        self._total_submitted = 0
+        self._start_time: float = 0.0
+        self._print_fn = print  # Allow override in tests
 
         # Create output dir and manifest
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +88,8 @@ class Orchestrator:
         phases_filter: list[Phase] | None,
     ) -> dict[str, Any]:
         """Core execution logic."""
+        self._start_time = time.monotonic()
+
         # Step 1: Crash recovery -- reset any SCRAPING to PENDING
         reset_count = self.manifest.reset_scraping_to_pending()
         if reset_count:
@@ -103,6 +114,12 @@ class Orchestrator:
         # Step 3: Process schools with thread pool
         results = {"completed": 0, "failed": 0, "skipped": 0, "interrupted": 0}
 
+        # Reset progress counters
+        with self._progress_lock:
+            self._done_count = 0
+            self._fail_count = 0
+            self._total_submitted = 0
+
         with ThreadPoolExecutor(max_workers=self.workers) as executor:
             futures = {}
 
@@ -120,6 +137,15 @@ class Orchestrator:
                 )
                 futures[future] = school
 
+            # Record total submitted and print start message
+            with self._progress_lock:
+                self._total_submitted = len(futures)
+
+            if self._total_submitted > 0:
+                self._print_fn(
+                    f"Starting pipeline for {self._total_submitted} schools..."
+                )
+
             # Wait for all futures to complete
             for future in as_completed(futures):
                 school = futures[future]
@@ -127,10 +153,12 @@ class Orchestrator:
                     success = future.result()
                     if success:
                         results["completed"] += 1
+                        self._report_progress(school.slug, success=True)
                     elif self.shutdown_event.is_set():
                         results["interrupted"] += 1
                     else:
                         results["failed"] += 1
+                        self._report_progress(school.slug, success=False)
                 except Exception as e:
                     logger.error(
                         "Worker crashed",
@@ -140,10 +168,52 @@ class Orchestrator:
                         school.slug, SchoolStatus.FAILED
                     )
                     results["failed"] += 1
+                    self._report_progress(school.slug, success=False)
 
         # Log summary
         logger.info("Pipeline complete", extra={"results": results})
         return results
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        """Format elapsed seconds as a human-readable string.
+
+        Returns e.g. '5s', '1m 23s', '1h 5m 30s'.
+        """
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m {secs:02d}s"
+        hours, mins = divmod(minutes, 60)
+        return f"{hours}h {mins:02d}m {secs:02d}s"
+
+    def _report_progress(self, slug: str, *, success: bool) -> None:
+        """Print a progress line after a school finishes processing.
+
+        Thread-safe: uses _progress_lock to update shared counters.
+        """
+        with self._progress_lock:
+            if success:
+                self._done_count += 1
+            else:
+                self._fail_count += 1
+            done = self._done_count
+            failed = self._fail_count
+            total = self._total_submitted
+
+        elapsed = time.monotonic() - self._start_time
+        finished = done + failed
+        remaining = total - finished
+        status = "Completed" if success else "Failed"
+        elapsed_str = self._format_elapsed(elapsed)
+
+        self._print_fn(
+            f"[{finished}/{total}] {status} {slug} "
+            f"(elapsed: {elapsed_str}) | "
+            f"done: {done}, failed: {failed}, remaining: {remaining}"
+        )
 
     def _process_school(
         self,

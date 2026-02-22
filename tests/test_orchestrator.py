@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from pathlib import Path
@@ -397,3 +398,227 @@ class TestOrchestratorThreadSafety:
         # Only one worker should have processed the school
         assert process_count == 1
         assert results["completed"] == 1
+
+
+class TestFormatElapsed:
+    """Test the _format_elapsed static method."""
+
+    def test_seconds_only(self) -> None:
+        assert Orchestrator._format_elapsed(5.0) == "5s"
+
+    def test_zero_seconds(self) -> None:
+        assert Orchestrator._format_elapsed(0.0) == "0s"
+
+    def test_59_seconds(self) -> None:
+        assert Orchestrator._format_elapsed(59.9) == "59s"
+
+    def test_one_minute(self) -> None:
+        assert Orchestrator._format_elapsed(60.0) == "1m 00s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert Orchestrator._format_elapsed(83.0) == "1m 23s"
+
+    def test_many_minutes(self) -> None:
+        assert Orchestrator._format_elapsed(3599.0) == "59m 59s"
+
+    def test_one_hour(self) -> None:
+        assert Orchestrator._format_elapsed(3600.0) == "1h 00m 00s"
+
+    def test_hours_minutes_seconds(self) -> None:
+        # 1h 5m 30s = 3600 + 300 + 30 = 3930
+        assert Orchestrator._format_elapsed(3930.0) == "1h 05m 30s"
+
+    def test_fractional_seconds_truncated(self) -> None:
+        # Fractional part is truncated, not rounded
+        assert Orchestrator._format_elapsed(5.9) == "5s"
+
+
+class TestProgressReporting:
+    """Test progress reporting output during pipeline runs."""
+
+    def _capture_output(self, tmp_path: Path, schools, handlers=None, **run_kwargs):
+        """Run the orchestrator and capture all printed output."""
+        output_lines: list[str] = []
+        lock = threading.Lock()
+
+        def capture_print(msg: str) -> None:
+            with lock:
+                output_lines.append(msg)
+
+        orch = Orchestrator(
+            schools=schools,
+            output_dir=tmp_path,
+            config={},
+            workers=1,
+            phase_handlers=handlers or {},
+        )
+        orch._print_fn = capture_print
+        results = orch.run(**run_kwargs)
+        return results, output_lines
+
+    def test_starting_message_includes_school_count(self, tmp_path: Path) -> None:
+        """A 'Starting pipeline for N schools...' message is printed."""
+        schools = _make_schools(3)
+        results, output = self._capture_output(tmp_path, schools)
+
+        assert any("Starting pipeline for 3 schools" in line for line in output)
+
+    def test_no_starting_message_when_no_schools(self, tmp_path: Path) -> None:
+        """No starting message when there are zero schools to process."""
+        results, output = self._capture_output(tmp_path, [])
+
+        assert not any("Starting pipeline" in line for line in output)
+
+    def test_completed_school_shows_progress_line(self, tmp_path: Path) -> None:
+        """Each completed school produces a progress line with expected format."""
+        schools = [_make_school("MIT")]
+        results, output = self._capture_output(tmp_path, schools)
+
+        # Find the progress line (not the "Starting" line)
+        progress_lines = [l for l in output if l.startswith("[")]
+        assert len(progress_lines) == 1
+
+        line = progress_lines[0]
+        assert "[1/1]" in line
+        assert "Completed" in line
+        assert "mit" in line
+        assert "elapsed:" in line
+        assert "done: 1" in line
+        assert "failed: 0" in line
+        assert "remaining: 0" in line
+
+    def test_failed_school_shows_failed_status(self, tmp_path: Path) -> None:
+        """A school that fails shows 'Failed' in progress line."""
+
+        def bad_handler(school, school_dir, metadata, config):
+            raise RuntimeError("boom")
+
+        schools = [_make_school("MIT")]
+        handlers = {Phase.ROBOTS: bad_handler}
+        results, output = self._capture_output(
+            tmp_path, schools, handlers, phases_filter=[Phase.ROBOTS]
+        )
+
+        progress_lines = [l for l in output if l.startswith("[")]
+        assert len(progress_lines) == 1
+        assert "Failed" in progress_lines[0]
+        assert "done: 0" in progress_lines[0]
+        assert "failed: 1" in progress_lines[0]
+
+    def test_multiple_schools_counts_are_correct(self, tmp_path: Path) -> None:
+        """With multiple schools, the final progress line has correct totals."""
+
+        def handler(school, school_dir, metadata, config):
+            if school.name == "University 1":
+                raise RuntimeError("fail")
+
+        schools = _make_schools(3)
+        handlers = {Phase.ROBOTS: handler}
+        results, output = self._capture_output(
+            tmp_path, schools, handlers, phases_filter=[Phase.ROBOTS]
+        )
+
+        # Should have 1 starting line + 3 progress lines
+        progress_lines = [l for l in output if l.startswith("[")]
+        assert len(progress_lines) == 3
+
+        # Parse the last progress line -- should show 3/3 total
+        last_line = progress_lines[-1]
+        assert "[3/3]" in last_line
+        assert "remaining: 0" in last_line
+
+    def test_progress_line_format_matches_spec(self, tmp_path: Path) -> None:
+        """Progress lines match the format: [N/M] Status slug (elapsed: Xs) | done: ..."""
+        schools = [_make_school("MIT")]
+        results, output = self._capture_output(tmp_path, schools)
+
+        progress_lines = [l for l in output if l.startswith("[")]
+        assert len(progress_lines) == 1
+
+        pattern = (
+            r"^\[\d+/\d+\] (Completed|Failed) \S+ "
+            r"\(elapsed: \d+[hms]"
+        )
+        assert re.search(pattern, progress_lines[0])
+
+    def test_skipped_schools_not_in_progress_count(self, tmp_path: Path) -> None:
+        """Schools that are skipped (already completed) don't count in total."""
+        manifest = ManifestManager(tmp_path)
+        manifest.init_school("university-0", {"name": "University 0"})
+        manifest.update_school_status("university-0", SchoolStatus.COMPLETED)
+
+        schools = _make_schools(3)
+        output_lines: list[str] = []
+        lock = threading.Lock()
+
+        def capture_print(msg: str) -> None:
+            with lock:
+                output_lines.append(msg)
+
+        orch = Orchestrator(
+            schools=schools, output_dir=tmp_path, config={}, workers=1
+        )
+        orch._print_fn = capture_print
+        results = orch.run()
+
+        # University 0 was skipped, so total submitted should be 2
+        starting_lines = [l for l in output_lines if "Starting pipeline" in l]
+        assert len(starting_lines) == 1
+        assert "2 schools" in starting_lines[0]
+
+    def test_progress_counters_thread_safe(self, tmp_path: Path) -> None:
+        """Multiple workers updating progress counters concurrently."""
+        schools = _make_schools(10)
+        output_lines: list[str] = []
+        lock = threading.Lock()
+
+        def capture_print(msg: str) -> None:
+            with lock:
+                output_lines.append(msg)
+
+        def handler(school, school_dir, metadata, config):
+            time.sleep(0.01)
+
+        handlers = {Phase.ROBOTS: handler}
+        orch = Orchestrator(
+            schools=schools,
+            output_dir=tmp_path,
+            config={},
+            workers=5,
+            phase_handlers=handlers,
+        )
+        orch._print_fn = capture_print
+        results = orch.run(phases_filter=[Phase.ROBOTS])
+
+        # Should have 1 starting line + 10 progress lines
+        progress_lines = [l for l in output_lines if l.startswith("[")]
+        assert len(progress_lines) == 10
+
+        # The finished numbers in progress lines should be 1 through 10
+        # (each unique, monotonically increasing per-thread, but unordered overall)
+        finished_nums = []
+        for line in progress_lines:
+            match = re.match(r"^\[(\d+)/10\]", line)
+            assert match, f"Unexpected line format: {line}"
+            finished_nums.append(int(match.group(1)))
+
+        assert sorted(finished_nums) == list(range(1, 11))
+
+    def test_elapsed_time_increases(self, tmp_path: Path) -> None:
+        """Elapsed time in progress lines is non-decreasing."""
+
+        def slow_handler(school, school_dir, metadata, config):
+            time.sleep(0.02)
+
+        schools = _make_schools(3)
+        handlers = {Phase.ROBOTS: slow_handler}
+        results, output = self._capture_output(
+            tmp_path, schools, handlers, phases_filter=[Phase.ROBOTS]
+        )
+
+        # All progress lines should have an elapsed field parseable as a time
+        progress_lines = [l for l in output if l.startswith("[")]
+        assert len(progress_lines) == 3
+
+        for line in progress_lines:
+            assert "elapsed:" in line
