@@ -18,17 +18,18 @@ from scrape_edu.data.manifest import ManifestManager, SchoolStatus
 
 
 class TestMainNoCommand:
-    """Test behavior when no subcommand is given."""
+    """Test behavior when no subcommand is given — launches interactive menu."""
 
-    def test_no_args_prints_help(self, capsys) -> None:
+    @patch("scrape_edu.interactive.interactive_menu", return_value=0)
+    def test_no_args_launches_menu(self, mock_menu) -> None:
         result = main([])
-        assert result == 1
-        captured = capsys.readouterr()
-        assert "usage:" in captured.out.lower() or "scrape_edu" in captured.out
+        assert result == 0
+        mock_menu.assert_called_once()
 
-    def test_no_args_returns_1(self) -> None:
+    @patch("scrape_edu.interactive.interactive_menu", return_value=0)
+    def test_no_args_returns_menu_exit_code(self, mock_menu) -> None:
         result = main([])
-        assert result == 1
+        assert result == 0
 
 
 # ======================================================================

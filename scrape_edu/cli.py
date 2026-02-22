@@ -37,15 +37,18 @@ def main(argv: list[str] | None = None) -> int:
     rescrape_parser.add_argument("--schools", type=str, help="Comma-separated list of school slugs")
     rescrape_parser.add_argument("--all", action="store_true", help="Flag all schools for re-scraping")
 
+    # --- menu command ---
+    subparsers.add_parser("menu", help="Launch interactive menu")
+
     # --- status command ---
     status_parser = subparsers.add_parser("status", help="Show pipeline status")
     status_parser.add_argument("--config", type=Path, help="Path to config YAML file")
 
     args = parser.parse_args(argv)
 
-    if args.command is None:
-        parser.print_help()
-        return 1
+    if args.command is None or args.command == "menu":
+        from scrape_edu.interactive import interactive_menu
+        return interactive_menu()
 
     if args.command == "status":
         return cmd_status(args)
