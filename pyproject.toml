@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "scrape_edu"
+version = "0.1.0"
+description = "Multi-threaded scraper for US university CS/DS course catalogs, syllabi, and faculty data"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "playwright>=1.40.0",
+    "pandas>=2.1.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+scrape-edu = "scrape_edu.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scrape_edu*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

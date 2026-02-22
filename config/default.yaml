@@ -1,0 +1,29 @@
+# scrape_edu default configuration
+# Override with .env variables or CLI flags
+
+workers: 5
+
+rate_limit:
+  min_delay: 1.0
+  max_delay: 3.0
+
+timeouts:
+  connect: 10
+  read: 30
+
+retries: 3
+
+browser_pool_size: 2
+
+output_dir: "./output"
+ipeds_dir: "./data/ipeds"
+
+user_agent: "scrape_edu/0.1.0 (academic research; +https://github.com/scrape-edu)"
+
+search:
+  provider: "serper"
+  queries_per_school: 2
+
+logging:
+  level: "INFO"
+  format: "json"
