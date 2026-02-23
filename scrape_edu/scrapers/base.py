@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from scrape_edu.data.manifest import SchoolMetadata
 from scrape_edu.data.school import School
@@ -57,11 +57,10 @@ class BaseScraper(ABC):
     def _url_to_filename(url: str, ext: str) -> str:
         """Generate a safe, unique filename from a URL.
 
-        Uses multiple path segments when the last segment is too generic
-        (e.g. "Index", "Details") to avoid collisions between URLs like
-        ``/Home/Index`` vs ``/Course/Index``.
+        Uses up to 3 path segments so that URLs sharing the same last segment
+        on the same subdomain produce distinct filenames.
 
-        Includes the subdomain prefix when the URL is on a subdomain so that
+        Includes a subdomain prefix when the URL is on a subdomain so that
         URLs with identical paths on different subdomains (e.g.
         ``scs.gatech.edu/people/faculty`` vs ``cc.gatech.edu/people/faculty``)
         produce distinct filenames.
@@ -78,14 +77,14 @@ class BaseScraper(ABC):
         if hostname.startswith("www."):
             hostname = hostname[4:]
 
-        # Split path into non-empty segments
-        path = parsed.path.rstrip("/")
+        # URL-decode the path so %20 becomes a space (later sanitised to '-')
+        path = unquote(parsed.path).rstrip("/")
         segments = [s for s in path.split("/") if s] if path else []
 
-        # Include query params as part of the name when present (e.g. ?IDc=ARTS)
+        # Include query params as part of the name when present (e.g. ?catoid=24)
         query_suffix = ""
         if parsed.query:
-            query_suffix = parsed.query
+            query_suffix = unquote(parsed.query)
 
         if segments:
             last = segments[-1]
@@ -94,34 +93,39 @@ class BaseScraper(ABC):
                 last = last.rsplit(".", 1)[0]
                 segments[-1] = last
 
-            # Use up to 2 path segments when the last one is generic
-            _generic = {"index", "details", "all", "list", "view", "page", "content"}
-            if last.lower() in _generic and len(segments) >= 2:
-                name = "-".join(segments[-2:])
-            else:
-                name = last
+            # Use up to 3 trailing path segments for uniqueness.
+            # e.g. /colleges-departments/ccse/about/faculty-staff → ccse-about-faculty-staff
+            use = segments[-3:] if len(segments) >= 3 else segments
+            name = "-".join(use)
 
-            # Append query params to disambiguate (e.g. Details/73962 vs Details/73962?IDc=ARTS)
+            # Append query params to disambiguate
             if query_suffix:
                 name = f"{name}-{query_suffix}"
         else:
             name = hostname.replace(".", "-")
 
-        # Clean the name
+        # Clean the name — collapse runs of dashes
         safe_name = "".join(
             c if c.isalnum() or c in "-_" else "-" for c in name
         ).strip("-")
+        # Collapse repeated dashes
+        while "--" in safe_name:
+            safe_name = safe_name.replace("--", "-")
 
         # Prefix with subdomain when URL has one to avoid collisions
         base_domain = extract_base_domain(url)
         if hostname and hostname != base_domain:
-            # e.g. "scs.gatech.edu" → prefix "scs"
             prefix = hostname.removesuffix(f".{base_domain}")
             safe_prefix = "".join(
                 c if c.isalnum() or c in "-_" else "-" for c in prefix
             ).strip("-")
             if safe_prefix:
                 safe_name = f"{safe_prefix}--{safe_name}" if safe_name else safe_prefix
+
+        # Truncate excessively long names (filesystem limit is 255)
+        max_name_len = 200 - len(ext)
+        if len(safe_name) > max_name_len:
+            safe_name = safe_name[:max_name_len].rstrip("-")
 
         safe_name = safe_name or "page"
         return f"{safe_name}{ext}"

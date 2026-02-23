@@ -406,7 +406,7 @@ class TestUrlToFilename:
         result = scraper._url_to_filename(
             "https://example.edu/dept/cs/catalog.pdf", ".pdf"
         )
-        assert result == "catalog.pdf"
+        assert result == "dept-cs-catalog.pdf"
 
     def test_url_with_no_path(self, scraper: CatalogScraper) -> None:
         result = scraper._url_to_filename("https://example.edu", ".pdf")

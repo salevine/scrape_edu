@@ -7,7 +7,7 @@ import re
 from collections import deque
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -153,16 +153,33 @@ class CatalogScraper(BaseScraper):
         return self.renderer.render_to_pdf(url, dest)
 
     # Path patterns for structural/navigation pages that should NOT be followed
-    # when crawling catalog links (e.g. bulletin homepages, search pages).
+    # when crawling catalog links (e.g. bulletin homepages, search pages, Acalog chrome).
     _CATALOG_SKIP_PATTERNS = re.compile(
         r"/(Home|UnivInfo|BulletinSearch|search|login|account|help|about|contact"
         r"|privacy|sitemap|accessibility|feedback)/",
         re.IGNORECASE,
     )
     _CATALOG_SKIP_ENDINGS = re.compile(
-        r"(Home/Index|BulletinSearchResult|search\.html|login|sitemap)$",
+        r"(Home/Index|BulletinSearchResult|search\.html|login|sitemap"
+        r"|search_advanced\.php|portfolio_nopop\.php|catalog_list\.php"
+        r"|index\.php)(\?|$)",
         re.IGNORECASE,
     )
+    # Query parameters that are cosmetic variants (print view, returnto nav).
+    # Stripped before dedup to avoid downloading the same content twice.
+    _STRIP_QUERY_PARAMS = {"print", "returnto"}
+
+    def _strip_cosmetic_params(self, url: str) -> str:
+        """Remove cosmetic query params (print, returnto) from a URL.
+
+        This avoids downloading print-view and navigation-return variants
+        of the same page as separate files.
+        """
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        stripped = {k: v for k, v in params.items() if k not in self._STRIP_QUERY_PARAMS}
+        new_query = urlencode(stripped, doseq=True) if stripped else ""
+        return urlunparse(parsed._replace(query=new_query))
 
     def _extract_catalog_links(self, html: str, base_url: str, school_url: str) -> list[str]:
         """Extract links from HTML that classify as CATALOG or COURSE.
@@ -185,7 +202,9 @@ class CatalogScraper(BaseScraper):
             if not absolute.startswith(("http://", "https://")):
                 continue
 
-            normalized = normalize_url(absolute)
+            # Strip cosmetic params before normalizing for dedup
+            cleaned = self._strip_cosmetic_params(absolute)
+            normalized = normalize_url(cleaned)
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -194,16 +213,16 @@ class CatalogScraper(BaseScraper):
                 continue
 
             # Skip structural/navigation pages
-            path = urlparse(normalized).path
-            if self._CATALOG_SKIP_PATTERNS.search(path):
+            norm_parsed = urlparse(normalized)
+            if self._CATALOG_SKIP_PATTERNS.search(norm_parsed.path):
                 continue
-            if self._CATALOG_SKIP_ENDINGS.search(path):
+            if self._CATALOG_SKIP_ENDINGS.search(norm_parsed.path):
                 continue
 
             title = a_tag.get_text(strip=True)
             category = classify_url(normalized, title=title)
             if category in (UrlCategory.CATALOG, UrlCategory.COURSE):
-                links.append(normalized)
+                links.append(cleaned)
 
         return links
 

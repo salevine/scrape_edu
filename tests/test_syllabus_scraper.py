@@ -422,21 +422,21 @@ class TestUrlToFilename:
     ) -> None:
         url = "https://example.edu/courses/cs101/syllabus.pdf"
         result = scraper._url_to_filename(url, scraper._get_url_extension(url))
-        assert result == "syllabus.pdf"
+        assert result == "courses-cs101-syllabus.pdf"
 
     def test_preserves_docx_extension(
         self, scraper: SyllabusScraper
     ) -> None:
         url = "https://example.edu/docs/outline.docx"
         result = scraper._url_to_filename(url, scraper._get_url_extension(url))
-        assert result == "outline.docx"
+        assert result == "docs-outline.docx"
 
     def test_defaults_to_pdf_when_no_extension(
         self, scraper: SyllabusScraper
     ) -> None:
         url = "https://example.edu/courses/cs101/syllabus"
         result = scraper._url_to_filename(url, scraper._get_url_extension(url))
-        assert result == "syllabus.pdf"
+        assert result == "courses-cs101-syllabus.pdf"
 
     def test_defaults_to_pdf_when_no_path(
         self, scraper: SyllabusScraper
@@ -460,4 +460,4 @@ class TestUrlToFilename:
     ) -> None:
         url = "https://example.edu/docs/course.doc"
         result = scraper._url_to_filename(url, scraper._get_url_extension(url))
-        assert result == "course.doc"
+        assert result == "docs-course.doc"
