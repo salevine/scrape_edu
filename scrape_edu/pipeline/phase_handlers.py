@@ -8,8 +8,9 @@ from typing import Any
 
 from scrape_edu.data.manifest import SchoolMetadata
 from scrape_edu.data.school import School
+from scrape_edu.discovery.homepage_crawler import HomepageCrawler
 from scrape_edu.discovery.serper_search import SerperClient
-from scrape_edu.discovery.url_classifier import classify_search_results
+from scrape_edu.discovery.url_classifier import UrlCategory, classify_search_results
 from scrape_edu.net.http_client import HttpClient
 from scrape_edu.pipeline.phases import Phase
 from scrape_edu.scrapers.catalog_scraper import CatalogScraper
@@ -41,6 +42,7 @@ def build_phase_handlers(
         Dict mapping Phase enum to handler callables.
     """
     robots_checker = RobotsChecker(http_client)
+    homepage_crawler = HomepageCrawler(http_client)
     catalog_scraper = CatalogScraper(http_client, config, renderer=renderer)
     faculty_scraper = FacultyScraper(http_client, config)
     syllabus_scraper = SyllabusScraper(http_client, config)
@@ -62,24 +64,54 @@ def build_phase_handlers(
     def handle_discovery(
         school: School, school_dir: Path, metadata: SchoolMetadata, config: dict
     ) -> None:
-        catalog_urls = []
-        faculty_urls = []
-        syllabus_urls = []
+        catalog_urls: list[str] = []
+        faculty_urls: list[str] = []
+        syllabus_urls: list[str] = []
+        discovery_method = "serper"
 
+        # Pass 1: Serper search
         if serper_client:
             results = serper_client.search_school(school.name, school.url)
-            all_results = results.get("cs_results", []) + results.get("ds_results", [])
+            # Consume all result keys (cs, ds, faculty, site-scoped)
+            all_results: list[dict] = []
+            for key in results:
+                all_results.extend(results[key])
 
             classified = classify_search_results(all_results)
             catalog_urls = [r["link"] for r in classified.get("catalog", []) if "link" in r]
             faculty_urls = [r["link"] for r in classified.get("faculty", []) if "link" in r]
             syllabus_urls = [r["link"] for r in classified.get("syllabus", []) if "link" in r]
 
+        # Pass 2: BFS fallback if Serper results are sparse
+        has_catalog = len(catalog_urls) >= 1
+        has_faculty = len(faculty_urls) >= 1
+        if not has_catalog or not has_faculty:
+            logger.info(
+                "Serper results sparse, running BFS fallback",
+                extra={
+                    "school": school.slug,
+                    "catalog_count": len(catalog_urls),
+                    "faculty_count": len(faculty_urls),
+                },
+            )
+            crawled = homepage_crawler.crawl(school.url)
+            for page in crawled:
+                cat = page["category"]
+                url = page["url"]
+                if cat == UrlCategory.CATALOG and url not in catalog_urls:
+                    catalog_urls.append(url)
+                elif cat == UrlCategory.FACULTY and url not in faculty_urls:
+                    faculty_urls.append(url)
+                elif cat == UrlCategory.SYLLABUS and url not in syllabus_urls:
+                    syllabus_urls.append(url)
+            discovery_method = "serper+bfs" if serper_client else "bfs"
+
         # Store discovered URLs in discovery phase data for downstream scrapers
         discovery_data = metadata._metadata.setdefault("phases", {}).setdefault("discovery", {})
         discovery_data["catalog_urls"] = catalog_urls
         discovery_data["faculty_urls"] = faculty_urls
         discovery_data["syllabus_urls"] = syllabus_urls
+        discovery_data["discovery_method"] = discovery_method
 
     def handle_catalog(
         school: School, school_dir: Path, metadata: SchoolMetadata, config: dict

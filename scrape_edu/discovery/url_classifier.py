@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 class UrlCategory(str, Enum):
@@ -33,6 +33,10 @@ CATALOG_PATTERNS = [
         r"acalog",
         r"courseleaf",
         r"academic.?catalog",
+        r"preview_program",
+        r"preview_entity",
+        r"preview_course",
+        r"smartcatalogiq",
     ]
 ]
 
@@ -90,6 +94,13 @@ _CATEGORY_PATTERNS: list[tuple[UrlCategory, list[re.Pattern[str]]]] = [
     (UrlCategory.DEPARTMENT, DEPARTMENT_PATTERNS),
 ]
 
+# Query parameters that indicate a dynamic catalog system (e.g. Acalog)
+_CATALOG_QUERY_PARAMS = {"catoid", "poid", "ent_oid", "coid"}
+
+# Hostname prefixes that signal catalog or faculty pages
+_HOSTNAME_CATALOG_PREFIXES = ("catalogs.", "bulletin.", "coursecatalog.")
+_HOSTNAME_FACULTY_PREFIXES = ("faculty.", "directory.")
+
 
 # ------------------------------------------------------------------
 # Public helpers
@@ -104,9 +115,9 @@ def _match_any(text: str, patterns: list[re.Pattern[str]]) -> bool:
 def classify_url(
     url: str, title: str = "", snippet: str = ""
 ) -> UrlCategory:
-    """Classify a URL based on path patterns and text signals.
+    """Classify a URL based on hostname, query params, path patterns, and text signals.
 
-    The URL path is checked first, then the title, then the snippet.
+    Checked in order: query params, hostname prefix, path/title/snippet patterns.
     The first matching category wins.
 
     Args:
@@ -119,8 +130,22 @@ def classify_url(
     """
     parsed = urlparse(url)
     path = parsed.path.lower()
+    hostname = (parsed.hostname or "").lower()
 
-    # Check each signal source in priority order
+    # 1. Query parameter check (dynamic catalog systems like Acalog)
+    query_params = set(parse_qs(parsed.query).keys())
+    if query_params & _CATALOG_QUERY_PARAMS:
+        return UrlCategory.CATALOG
+
+    # 2. Hostname prefix check
+    for prefix in _HOSTNAME_CATALOG_PREFIXES:
+        if hostname.startswith(prefix):
+            return UrlCategory.CATALOG
+    for prefix in _HOSTNAME_FACULTY_PREFIXES:
+        if hostname.startswith(prefix):
+            return UrlCategory.FACULTY
+
+    # 3. Path / title / snippet pattern matching
     for text in (path, title.lower(), snippet.lower()):
         if not text:
             continue

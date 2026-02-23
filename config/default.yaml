@@ -22,7 +22,10 @@ user_agent: "scrape_edu/0.1.0 (academic research; +https://github.com/scrape-edu
 
 search:
   provider: "serper"
-  queries_per_school: 2
+  queries_per_school: 5
+
+catalog_follow_depth: 1
+catalog_max_followed: 20
 
 logging:
   level: "INFO"

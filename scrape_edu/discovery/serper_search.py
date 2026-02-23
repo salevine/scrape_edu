@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from scrape_edu.utils.url_utils import extract_domain
+
 logger = logging.getLogger("scrape_edu")
 
 
@@ -25,7 +27,7 @@ class SerperClient:
 
     SEARCH_URL = "https://google.serper.dev/search"
 
-    def __init__(self, api_key: str, queries_per_school: int = 2) -> None:
+    def __init__(self, api_key: str, queries_per_school: int = 5) -> None:
         self.api_key = api_key
         self.queries_per_school = queries_per_school
         self._queries_used = 0
@@ -88,25 +90,42 @@ class SerperClient:
     def search_school(
         self, school_name: str, school_url: str
     ) -> dict[str, list[dict[str, Any]]]:
-        """Run CS and DS searches for a single school.
+        """Run up to 5 targeted searches for a single school.
+
+        Queries:
+            1. CS courses catalog (by name)
+            2. DS program catalog (by name)
+            3. CS faculty directory (by name)
+            4. Site-scoped CS course catalog
+            5. Site-scoped CS syllabus
 
         Args:
             school_name: Human-readable name, e.g. ``"MIT"``.
-            school_url: The school's homepage URL (for context/logging).
+            school_url: The school's homepage URL.
 
         Returns:
-            Dict with ``cs_results`` and ``ds_results`` keys, each
-            containing a list of organic search results.
+            Dict with result keys ``cs_results``, ``ds_results``,
+            ``faculty_results``, ``site_catalog_results``, and
+            ``site_syllabus_results``.
         """
-        cs_query = f"{school_name} computer science department courses catalog"
-        ds_query = f"{school_name} data science program courses catalog"
+        domain = extract_domain(school_url)
+
+        queries = {
+            "cs_results": f"{school_name} computer science courses catalog",
+            "ds_results": f"{school_name} data science program courses catalog",
+            "faculty_results": f"{school_name} computer science faculty directory",
+            "site_catalog_results": f"site:{domain} computer science course catalog",
+            "site_syllabus_results": f"site:{domain} computer science syllabus",
+        }
 
         logger.info(
             "Searching for school",
-            extra={"school_name": school_name, "school_url": school_url},
+            extra={"school_name": school_name, "school_url": school_url,
+                   "num_queries": len(queries)},
         )
 
-        return {
-            "cs_results": self.search(cs_query),
-            "ds_results": self.search(ds_query),
-        }
+        results: dict[str, list[dict[str, Any]]] = {}
+        for key, query in queries.items():
+            results[key] = self.search(query)
+
+        return results

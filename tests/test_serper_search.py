@@ -123,22 +123,25 @@ class TestSearch:
 
 class TestSearchSchool:
     @patch("scrape_edu.discovery.serper_search.requests.post")
-    def test_makes_two_queries(self, mock_post: MagicMock, client: SerperClient) -> None:
+    def test_makes_five_queries(self, mock_post: MagicMock, client: SerperClient) -> None:
         mock_post.return_value = _mock_response({"organic": SAMPLE_ORGANIC})
 
         client.search_school("MIT", "https://mit.edu")
 
-        assert mock_post.call_count == 2
-        assert client.queries_used == 2
+        assert mock_post.call_count == 5
+        assert client.queries_used == 5
 
     @patch("scrape_edu.discovery.serper_search.requests.post")
-    def test_returns_cs_and_ds_keys(self, mock_post: MagicMock, client: SerperClient) -> None:
+    def test_returns_all_result_keys(self, mock_post: MagicMock, client: SerperClient) -> None:
         mock_post.return_value = _mock_response({"organic": SAMPLE_ORGANIC})
 
         result = client.search_school("Stanford", "https://stanford.edu")
 
         assert "cs_results" in result
         assert "ds_results" in result
+        assert "faculty_results" in result
+        assert "site_catalog_results" in result
+        assert "site_syllabus_results" in result
         assert len(result["cs_results"]) == 2
         assert len(result["ds_results"]) == 2
 
@@ -149,19 +152,25 @@ class TestSearchSchool:
         client.search_school("MIT", "https://mit.edu")
 
         queries = [call.kwargs["json"]["q"] for call in mock_post.call_args_list]
-        assert queries[0] == "MIT computer science department courses catalog"
+        assert queries[0] == "MIT computer science courses catalog"
         assert queries[1] == "MIT data science program courses catalog"
+        assert queries[2] == "MIT computer science faculty directory"
+        assert queries[3] == "site:mit.edu computer science course catalog"
+        assert queries[4] == "site:mit.edu computer science syllabus"
 
     @patch("scrape_edu.discovery.serper_search.requests.post")
     def test_handles_partial_failure(self, mock_post: MagicMock, client: SerperClient) -> None:
-        """If one query fails, the other should still return results."""
+        """If one query fails, the others should still return results."""
         good_resp = _mock_response({"organic": SAMPLE_ORGANIC})
-        mock_post.side_effect = [good_resp, requests.RequestException("fail")]
+        responses = [good_resp, requests.RequestException("fail"),
+                     good_resp, good_resp, good_resp]
+        mock_post.side_effect = responses
 
         result = client.search_school("MIT", "https://mit.edu")
 
         assert len(result["cs_results"]) == 2
         assert result["ds_results"] == []
+        assert len(result["faculty_results"]) == 2
 
 
 # ------------------------------------------------------------------
@@ -178,7 +187,7 @@ class TestProperties:
 
     def test_queries_per_school_default(self) -> None:
         c = SerperClient(api_key="k")
-        assert c.queries_per_school == 2
+        assert c.queries_per_school == 5
 
     def test_queries_per_school_custom(self) -> None:
         c = SerperClient(api_key="k", queries_per_school=4)
@@ -191,4 +200,4 @@ class TestProperties:
         client.search("q1")
         client.search_school("X", "https://x.edu")
 
-        assert client.queries_used == 3  # 1 + 2
+        assert client.queries_used == 6  # 1 + 5

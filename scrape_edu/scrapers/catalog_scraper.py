@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+from bs4 import BeautifulSoup
 
 from scrape_edu.data.manifest import SchoolMetadata
 from scrape_edu.data.school import School
+from scrape_edu.discovery.url_classifier import UrlCategory, classify_url
 from scrape_edu.net.http_client import HttpClient
 from scrape_edu.scrapers.base import BaseScraper
+from scrape_edu.utils.url_utils import is_related_domain, normalize_url
 
 logger = logging.getLogger("scrape_edu")
 
@@ -33,25 +38,50 @@ class CatalogScraper(BaseScraper):
         school_dir: Path,
         metadata: SchoolMetadata,
     ) -> None:
-        """Download/render all catalog URLs for a school."""
+        """Download/render all catalog URLs for a school, following links to program/course pages."""
         catalog_dir = school_dir / "catalog"
         catalog_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get catalog URLs from metadata (populated during discovery phase)
-        catalog_urls = self._get_catalog_urls(metadata)
+        max_follow_depth = self.config.get("catalog_follow_depth", 1)
+        max_followed = self.config.get("catalog_max_followed", 20)
 
-        if not catalog_urls:
+        # Get catalog URLs from metadata (populated during discovery phase)
+        seed_urls = self._get_catalog_urls(metadata)
+
+        if not seed_urls:
             logger.info("No catalog URLs found", extra={"school": school.slug})
             return
 
-        for url in catalog_urls:
+        # BFS queue: (url, depth) — seed URLs are depth 0
+        queue: deque[tuple[str, int]] = deque((url, 0) for url in seed_urls)
+        processed: set[str] = set()
+        followed_count = 0
+
+        while queue:
+            url, depth = queue.popleft()
+            normalized = normalize_url(url)
+
+            if normalized in processed:
+                continue
+            processed.add(normalized)
+
             if self._skip_if_downloaded(url, metadata):
                 continue
 
             try:
+                html_content = None
+
                 if self._is_pdf_url(url):
                     filepath = self._download_pdf(url, catalog_dir)
                 else:
+                    # Fetch HTML for link extraction before rendering to PDF
+                    if depth < max_follow_depth and followed_count < max_followed:
+                        try:
+                            response = self.client.get(url)
+                            html_content = response.text
+                        except Exception:
+                            pass  # link extraction is best-effort
+
                     filepath = self._render_html_to_pdf(url, catalog_dir)
 
                 if filepath:
@@ -63,8 +93,20 @@ class CatalogScraper(BaseScraper):
                             "school": school.slug,
                             "url": url,
                             "path": str(filepath),
+                            "depth": depth,
                         },
                     )
+
+                # Follow links from HTML pages at allowed depth
+                if html_content and depth < max_follow_depth and followed_count < max_followed:
+                    new_links = self._extract_catalog_links(html_content, url)
+                    for link in new_links:
+                        if normalize_url(link) not in processed:
+                            queue.append((link, depth + 1))
+                            followed_count += 1
+                            if followed_count >= max_followed:
+                                break
+
             except Exception as e:
                 logger.warning(
                     "Failed to download catalog",
@@ -108,6 +150,36 @@ class CatalogScraper(BaseScraper):
         filename = self._url_to_filename(url, ".pdf")
         dest = catalog_dir / filename
         return self.renderer.render_to_pdf(url, dest)
+
+    def _extract_catalog_links(self, html: str, base_url: str) -> list[str]:
+        """Extract links from HTML that classify as CATALOG or COURSE.
+
+        Only returns links on a related domain (same base .edu).
+        """
+        soup = BeautifulSoup(html, "lxml")
+        links: list[str] = []
+        seen: set[str] = set()
+
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"]
+            absolute = urljoin(base_url, href)
+            if not absolute.startswith(("http://", "https://")):
+                continue
+
+            normalized = normalize_url(absolute)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+
+            if not is_related_domain(base_url, normalized):
+                continue
+
+            title = a_tag.get_text(strip=True)
+            category = classify_url(normalized, title=title)
+            if category in (UrlCategory.CATALOG, UrlCategory.COURSE):
+                links.append(normalized)
+
+        return links
 
     def _url_to_filename(self, url: str, ext: str) -> str:
         """Generate a safe filename from a URL."""

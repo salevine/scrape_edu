@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 from scrape_edu.discovery.url_classifier import UrlCategory, classify_url
 from scrape_edu.net.http_client import HttpClient
-from scrape_edu.utils.url_utils import extract_domain, is_same_domain, normalize_url
+from scrape_edu.utils.url_utils import extract_base_domain, normalize_url
 
 logger = logging.getLogger("scrape_edu")
 
@@ -56,6 +56,7 @@ class HomepageCrawler:
         queue: deque[tuple[str, int]] = deque()  # (url, depth)
 
         start_normalized = normalize_url(start_url)
+        start_base_domain = extract_base_domain(start_normalized)
         queue.append((start_normalized, 0))
         visited.add(start_normalized)
 
@@ -93,7 +94,7 @@ class HomepageCrawler:
                         normalized = normalize_url(link)
                         if (
                             normalized not in visited
-                            and is_same_domain(url, normalized)
+                            and extract_base_domain(normalized) == start_base_domain
                         ):
                             visited.add(normalized)
                             queue.append((normalized, depth + 1))

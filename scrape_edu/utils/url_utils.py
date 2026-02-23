@@ -104,3 +104,56 @@ def is_same_domain(url1: str, url2: str) -> bool:
         False
     """
     return extract_domain(url1) == extract_domain(url2)
+
+
+def extract_base_domain(url: str) -> str:
+    """Extract the registrable base domain from a URL.
+
+    For .edu domains this is the last two parts (e.g. ``gsu.edu``
+    from ``catalogs.gsu.edu``).  Works reliably for all US university
+    domains tracked in IPEDS.
+
+    Args:
+        url: The URL to extract the base domain from.
+
+    Returns:
+        The base domain string (e.g. ``"gsu.edu"``).
+
+    Examples:
+        >>> extract_base_domain("https://catalogs.gsu.edu/page")
+        'gsu.edu'
+        >>> extract_base_domain("https://www.cs.stanford.edu")
+        'stanford.edu'
+        >>> extract_base_domain("https://mit.edu")
+        'mit.edu'
+    """
+    domain = extract_domain(url)
+    parts = domain.split(".")
+    # Return last two parts (e.g. gsu.edu)
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
+
+def is_related_domain(url1: str, url2: str) -> bool:
+    """Check if two URLs share the same registrable base domain.
+
+    Unlike :func:`is_same_domain`, this treats subdomains as related.
+    For example ``catalogs.gsu.edu`` and ``gsu.edu`` are related.
+
+    Args:
+        url1: First URL.
+        url2: Second URL.
+
+    Returns:
+        True if both URLs share the same base domain.
+
+    Examples:
+        >>> is_related_domain("https://catalogs.gsu.edu", "https://gsu.edu")
+        True
+        >>> is_related_domain("https://cs.gsu.edu", "https://catalogs.gsu.edu")
+        True
+        >>> is_related_domain("https://gsu.edu", "https://mit.edu")
+        False
+    """
+    return extract_base_domain(url1) == extract_base_domain(url2)
