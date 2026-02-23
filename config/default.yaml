@@ -27,6 +27,8 @@ search:
 catalog_follow_depth: 1
 catalog_max_followed: 40
 
+syllabus_max_followed: 20
+
 logging:
   level: "INFO"
   format: "json"

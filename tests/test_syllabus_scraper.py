@@ -410,6 +410,252 @@ class TestExtractSyllabusLinks:
 
 
 # ------------------------------------------------------------------
+# Tests — _is_direct_file() and _split_files_and_pages()
+# ------------------------------------------------------------------
+
+
+class TestIsDirectFile:
+    """Test the _is_direct_file classifier."""
+
+    def test_pdf_is_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert scraper._is_direct_file("https://example.edu/syllabus.pdf")
+
+    def test_docx_is_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert scraper._is_direct_file("https://example.edu/outline.docx")
+
+    def test_doc_is_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert scraper._is_direct_file("https://example.edu/outline.doc")
+
+    def test_php_is_not_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert not scraper._is_direct_file("https://example.edu/syllabi.php")
+
+    def test_html_is_not_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert not scraper._is_direct_file("https://example.edu/syllabi/index.html")
+
+    def test_no_extension_is_not_direct_file(self, scraper: SyllabusScraper) -> None:
+        assert not scraper._is_direct_file("https://example.edu/syllabi/archive")
+
+
+class TestSplitFilesAndPages:
+    """Test the _split_files_and_pages helper."""
+
+    def test_splits_correctly(self, scraper: SyllabusScraper) -> None:
+        urls = [
+            "https://example.edu/syllabus.pdf",
+            "https://example.edu/archive.php",
+            "https://example.edu/outline.docx",
+            "https://example.edu/syllabi/",
+        ]
+        files, pages = scraper._split_files_and_pages(urls)
+        assert files == [
+            "https://example.edu/syllabus.pdf",
+            "https://example.edu/outline.docx",
+        ]
+        assert pages == [
+            "https://example.edu/archive.php",
+            "https://example.edu/syllabi/",
+        ]
+
+    def test_all_files(self, scraper: SyllabusScraper) -> None:
+        urls = ["https://example.edu/a.pdf", "https://example.edu/b.doc"]
+        files, pages = scraper._split_files_and_pages(urls)
+        assert len(files) == 2
+        assert len(pages) == 0
+
+    def test_all_pages(self, scraper: SyllabusScraper) -> None:
+        urls = ["https://example.edu/syllabi.php", "https://example.edu/archive/"]
+        files, pages = scraper._split_files_and_pages(urls)
+        assert len(files) == 0
+        assert len(pages) == 2
+
+
+# ------------------------------------------------------------------
+# Tests — _follow_syllabus_pages()
+# ------------------------------------------------------------------
+
+
+class TestFollowSyllabusPages:
+    """Test the one-level link-following for syllabus HTML pages."""
+
+    def test_follows_html_page_and_finds_pdfs(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Following an HTML page extracts direct file links."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        archive_html = """
+        <html><body>
+        <a href="/syllabi/cs101-fall2024.pdf">CS101 Syllabus</a>
+        <a href="/syllabi/cs201-fall2024.pdf">CS201 Syllabus</a>
+        <a href="/about">About Us</a>
+        </body></html>
+        """
+        mock_response = MagicMock()
+        mock_response.text = archive_html
+        mock_http_client.get.return_value = mock_response
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi/archive.php"],
+            school,
+            max_followed=20,
+        )
+
+        assert len(result) == 2
+        assert "https://www.mit.edu/syllabi/cs101-fall2024.pdf" in result
+        assert "https://www.mit.edu/syllabi/cs201-fall2024.pdf" in result
+
+    def test_respects_max_followed_limit(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Only follows up to max_followed pages."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        mock_response = MagicMock()
+        mock_response.text = "<html><body></body></html>"
+        mock_http_client.get.return_value = mock_response
+
+        pages = [f"https://www.mit.edu/page{i}.php" for i in range(10)]
+        scraper._follow_syllabus_pages(pages, school, max_followed=3)
+
+        assert mock_http_client.get.call_count == 3
+
+    def test_ignores_off_domain_links(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Links pointing to external domains are filtered out."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        archive_html = """
+        <html><body>
+        <a href="https://www.mit.edu/syllabi/cs101.pdf">CS101 Syllabus</a>
+        <a href="https://external.com/syllabi/stolen.pdf">External Syllabus</a>
+        </body></html>
+        """
+        mock_response = MagicMock()
+        mock_response.text = archive_html
+        mock_http_client.get.return_value = mock_response
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/archive.php"],
+            school,
+            max_followed=20,
+        )
+
+        assert len(result) == 1
+        assert "mit.edu" in result[0]
+
+    def test_handles_fetch_errors_gracefully(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Errors fetching a page don't stop processing of other pages."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        good_html = """
+        <html><body>
+        <a href="/syllabi/cs101.pdf">CS101 Syllabus</a>
+        </body></html>
+        """
+        good_response = MagicMock()
+        good_response.text = good_html
+
+        mock_http_client.get.side_effect = [
+            Exception("Timeout"),
+            good_response,
+        ]
+
+        result = scraper._follow_syllabus_pages(
+            [
+                "https://www.mit.edu/broken.php",
+                "https://www.mit.edu/working.php",
+            ],
+            school,
+            max_followed=20,
+        )
+
+        assert len(result) == 1
+        assert "cs101.pdf" in result[0]
+
+    def test_only_returns_direct_files_not_more_pages(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Only direct file URLs are returned, not further HTML pages."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        archive_html = """
+        <html><body>
+        <a href="/syllabi/cs101.pdf">CS101 Syllabus</a>
+        <a href="/syllabi/more-syllabi.php">View More Syllabi</a>
+        </body></html>
+        """
+        mock_response = MagicMock()
+        mock_response.text = archive_html
+        mock_http_client.get.return_value = mock_response
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/archive.php"],
+            school,
+            max_followed=20,
+        )
+
+        assert len(result) == 1
+        assert result[0].endswith(".pdf")
+
+
+class TestScrapeWithFollowing:
+    """Test that scrape() integrates link-following correctly."""
+
+    def test_follows_page_urls_and_downloads_found_files(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+    ) -> None:
+        """scrape() follows an HTML syllabus page and downloads PDFs found there."""
+        scraper = SyllabusScraper(
+            http_client=mock_http_client, config={"syllabus_max_followed": 20}
+        )
+        metadata = SchoolMetadata(school_dir)
+        # Discovery found an HTML page, not a direct PDF
+        metadata._metadata["phases"] = {
+            "discovery": {
+                "syllabus_urls": ["https://www.mit.edu/syllabi/archive.php"],
+            },
+        }
+
+        archive_html = """
+        <html><body>
+        <a href="/syllabi/cs101.pdf">CS101 Syllabus</a>
+        <a href="/syllabi/cs201.pdf">CS201 Syllabus</a>
+        </body></html>
+        """
+        mock_response = MagicMock()
+        mock_response.text = archive_html
+        mock_http_client.get.return_value = mock_response
+        mock_http_client.download.return_value = Path("dummy.pdf")
+
+        scraper.scrape(school, school_dir, metadata)
+
+        # Should download the archive page itself + 2 PDFs found on it = 3
+        assert mock_http_client.download.call_count == 3
+        downloaded_urls = [
+            c.args[0] for c in mock_http_client.download.call_args_list
+        ]
+        assert "https://www.mit.edu/syllabi/archive.php" in downloaded_urls
+        assert "https://www.mit.edu/syllabi/cs101.pdf" in downloaded_urls
+        assert "https://www.mit.edu/syllabi/cs201.pdf" in downloaded_urls
+
+
+# ------------------------------------------------------------------
 # Tests — _url_to_filename()
 # ------------------------------------------------------------------
 

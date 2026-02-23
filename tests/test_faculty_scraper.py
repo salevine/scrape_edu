@@ -517,7 +517,7 @@ class TestUrlToFilename:
         result = scraper._url_to_filename(
             "https://example.edu/faculty/directory", ".html"
         )
-        assert result == "directory.html"
+        assert result == "faculty-directory.html"
 
     def test_strips_existing_extension(
         self, scraper: FacultyScraper
@@ -525,7 +525,7 @@ class TestUrlToFilename:
         result = scraper._url_to_filename(
             "https://example.edu/faculty/people.php", ".html"
         )
-        assert result == "people.html"
+        assert result == "faculty-people.html"
 
     def test_uses_domain_when_no_path(
         self, scraper: FacultyScraper
@@ -539,7 +539,7 @@ class TestUrlToFilename:
         result = scraper._url_to_filename(
             "https://example.edu/faculty/people list&more", ".html"
         )
-        assert result == "people-list-more.html"
+        assert result == "faculty-people-list-more.html"
         # No special chars in result
         base = result.replace(".html", "")
         assert all(c.isalnum() or c in "-_" for c in base)
@@ -555,4 +555,4 @@ class TestUrlToFilename:
         result = scraper._url_to_filename(
             "https://example.edu/faculty/directory", ".json"
         )
-        assert result == "directory.json"
+        assert result == "faculty-directory.json"

@@ -14,8 +14,15 @@ from scrape_edu.data.models import SyllabusRecord
 from scrape_edu.data.school import School
 from scrape_edu.net.http_client import HttpClient
 from scrape_edu.scrapers.base import BaseScraper
+from scrape_edu.utils.url_utils import is_related_domain
 
 logger = logging.getLogger("scrape_edu")
+
+# File extensions that are direct downloads (not HTML pages to follow)
+_DIRECT_FILE_EXTENSIONS = frozenset({
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+    ".xls", ".xlsx", ".rtf", ".odt", ".txt",
+})
 
 
 class SyllabusScraper(BaseScraper):
@@ -34,13 +41,19 @@ class SyllabusScraper(BaseScraper):
         # Get syllabus URLs from discovery, plus scan faculty pages for links
         syllabus_urls = self._get_syllabus_urls(metadata)
 
-        # Also scan downloaded faculty pages for syllabus links
+        # Also scan downloaded faculty pages for syllabus links.
+        # Build a reverse lookup (filepath → URL) so we can resolve relative
+        # links against the faculty page's actual URL, not the school homepage.
+        filepath_to_url = self._build_filepath_to_url(metadata)
         faculty_dir = school_dir / "faculty"
         if faculty_dir.exists():
             for html_file in faculty_dir.glob("*.html"):
                 try:
                     html = html_file.read_text(encoding="utf-8")
-                    found = self._extract_syllabus_links(html, school.url)
+                    base_url = filepath_to_url.get(
+                        str(html_file), school.url
+                    )
+                    found = self._extract_syllabus_links(html, base_url)
                     syllabus_urls.extend(found)
                 except Exception as e:
                     logger.debug(
@@ -56,13 +69,29 @@ class SyllabusScraper(BaseScraper):
                 seen.add(url)
                 unique_urls.append(url)
 
-        if not unique_urls:
+        # Follow HTML pages one level deep to find actual file links.
+        # e.g. a "Syllabi Archive" .php page listing dozens of PDFs.
+        max_followed = self.config.get("syllabus_max_followed", 20)
+        file_urls, page_urls = self._split_files_and_pages(unique_urls)
+        followed_file_urls = self._follow_syllabus_pages(
+            page_urls, school, max_followed,
+        )
+
+        # Merge: page URLs (download as-is) + direct file URLs + newly found file URLs
+        all_urls: list[str] = []
+        all_seen: set[str] = set()
+        for url in page_urls + file_urls + followed_file_urls:
+            if url not in all_seen:
+                all_seen.add(url)
+                all_urls.append(url)
+
+        if not all_urls:
             logger.info(
                 "No syllabus URLs found", extra={"school": school.slug}
             )
             return
 
-        for url in unique_urls:
+        for url in all_urls:
             if self._skip_if_downloaded(url, metadata):
                 continue
 
@@ -87,6 +116,25 @@ class SyllabusScraper(BaseScraper):
                         "error": str(e),
                     },
                 )
+
+    @staticmethod
+    def _build_filepath_to_url(metadata: SchoolMetadata) -> dict[str, str]:
+        """Build a reverse mapping from filepath to source URL.
+
+        Used to find the original URL for downloaded faculty HTML files so
+        that relative links within them can be resolved correctly.
+
+        Stores both the raw filepath and the resolved absolute path as keys
+        so lookups work regardless of whether the caller uses relative or
+        absolute paths.
+        """
+        mapping: dict[str, str] = {}
+        for url, info in metadata._metadata.get("downloaded_urls", {}).items():
+            fp = info.get("filepath", "")
+            if fp:
+                mapping[fp] = url
+                mapping[str(Path(fp).resolve())] = url
+        return mapping
 
     def _get_syllabus_urls(self, metadata: SchoolMetadata) -> list[str]:
         """Get syllabus URLs from discovery phase data."""
@@ -129,6 +177,94 @@ class SyllabusScraper(BaseScraper):
         return links
 
     # _url_to_filename inherited from BaseScraper
+
+    @staticmethod
+    def _is_direct_file(url: str) -> bool:
+        """Return True if the URL points to a downloadable file (PDF, doc, etc.)."""
+        path = urlparse(url).path.lower().rstrip("/")
+        return any(path.endswith(ext) for ext in _DIRECT_FILE_EXTENSIONS)
+
+    @staticmethod
+    def _split_files_and_pages(
+        urls: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Split URLs into direct file downloads and HTML pages.
+
+        Returns:
+            (file_urls, page_urls) tuple.
+        """
+        files: list[str] = []
+        pages: list[str] = []
+        for url in urls:
+            if SyllabusScraper._is_direct_file(url):
+                files.append(url)
+            else:
+                pages.append(url)
+        return files, pages
+
+    def _follow_syllabus_pages(
+        self,
+        page_urls: list[str],
+        school: School,
+        max_followed: int,
+    ) -> list[str]:
+        """Fetch HTML syllabus pages and extract direct file links from them.
+
+        This handles the common case where a syllabus link from a faculty page
+        points to an intermediate HTML page (e.g. ``old_syllabus_schedule.php``)
+        that itself contains links to actual PDF/doc syllabus files.
+
+        Args:
+            page_urls: URLs of HTML pages to follow.
+            school: The school (used for domain filtering).
+            max_followed: Maximum number of pages to fetch.
+
+        Returns:
+            List of direct file URLs found on the followed pages.
+        """
+        found_files: list[str] = []
+        followed = 0
+
+        for page_url in page_urls:
+            if followed >= max_followed:
+                break
+            try:
+                response = self.client.get(page_url)
+                html = response.text
+                followed += 1
+
+                # Extract syllabus links using the page's own URL as base
+                links = self._extract_syllabus_links(html, page_url)
+
+                for link in links:
+                    # Only keep direct file links on the school's domain
+                    if self._is_direct_file(link) and is_related_domain(
+                        school.url, link
+                    ):
+                        found_files.append(link)
+
+                if links:
+                    logger.info(
+                        "Followed syllabus page",
+                        extra={
+                            "school": school.slug,
+                            "page_url": page_url,
+                            "files_found": len(
+                                [l for l in links if self._is_direct_file(l)]
+                            ),
+                        },
+                    )
+            except Exception as e:
+                logger.debug(
+                    "Failed to follow syllabus page",
+                    extra={
+                        "school": school.slug,
+                        "url": page_url,
+                        "error": str(e),
+                    },
+                )
+
+        return found_files
 
     @staticmethod
     def _get_url_extension(url: str) -> str:
