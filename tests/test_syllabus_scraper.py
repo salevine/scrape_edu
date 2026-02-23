@@ -707,3 +707,413 @@ class TestUrlToFilename:
         url = "https://example.edu/docs/course.doc"
         result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         assert result == "docs-course.doc"
+
+
+# ------------------------------------------------------------------
+# Tests — _extract_course_links()
+# ------------------------------------------------------------------
+
+
+class TestExtractCourseLinks:
+    """Test the _extract_course_links helper."""
+
+    def test_finds_links_with_courses_path(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="/courses/csci-1302">CSCI 1302</a>
+        <a href="/about">About</a>
+        </body></html>
+        """
+        links = scraper._extract_course_links(
+            html, "https://computing.uga.edu/syllabi", "https://uga.edu"
+        )
+        assert len(links) == 1
+        assert "/courses/csci-1302" in links[0]
+
+    def test_finds_links_with_course_text_pattern(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        """Link text matching course code pattern (e.g. 'CS 101') is detected."""
+        html = """
+        <html><body>
+        <a href="/programs/cs101-info">CS 101</a>
+        <a href="/programs/about-us">About Our Programs</a>
+        </body></html>
+        """
+        links = scraper._extract_course_links(
+            html, "https://cs.example.edu/", "https://example.edu"
+        )
+        assert len(links) == 1
+        assert "cs101-info" in links[0]
+
+    def test_filters_off_domain_links(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="https://external.com/courses/cs101">CS 101</a>
+        </body></html>
+        """
+        links = scraper._extract_course_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 0
+
+    def test_deduplicates_course_links(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="/courses/cs101">CS 101</a>
+        <a href="/courses/cs101">Introduction to CS</a>
+        </body></html>
+        """
+        links = scraper._extract_course_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 1
+
+    def test_matches_singular_course_path(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        """Matches /course/ (singular) as well as /courses/."""
+        html = """
+        <html><body>
+        <a href="/course/data-science-200">DS 200</a>
+        </body></html>
+        """
+        links = scraper._extract_course_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 1
+
+
+# ------------------------------------------------------------------
+# Tests — _extract_file_links()
+# ------------------------------------------------------------------
+
+
+class TestExtractFileLinks:
+    """Test the _extract_file_links helper."""
+
+    def test_finds_all_pdfs_on_domain(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="/files/CIS_CSCI_1302.pdf">Course PDF</a>
+        <a href="/files/random_notes.pdf">Notes</a>
+        <a href="/about">About</a>
+        </body></html>
+        """
+        links = scraper._extract_file_links(
+            html, "https://example.edu/courses/cs101", "https://example.edu"
+        )
+        assert len(links) == 2
+        assert all(link.endswith(".pdf") for link in links)
+
+    def test_finds_doc_and_docx(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="/files/outline.doc">Outline</a>
+        <a href="/files/schedule.docx">Schedule</a>
+        </body></html>
+        """
+        links = scraper._extract_file_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 2
+
+    def test_ignores_off_domain_files(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="https://external.com/files/stolen.pdf">External PDF</a>
+        <a href="/files/local.pdf">Local PDF</a>
+        </body></html>
+        """
+        links = scraper._extract_file_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 1
+        assert "local.pdf" in links[0]
+
+    def test_ignores_html_pages(
+        self, scraper: SyllabusScraper
+    ) -> None:
+        html = """
+        <html><body>
+        <a href="/page.html">HTML Page</a>
+        <a href="/archive.php">Archive</a>
+        <a href="/file.pdf">PDF File</a>
+        </body></html>
+        """
+        links = scraper._extract_file_links(
+            html, "https://example.edu/", "https://example.edu"
+        )
+        assert len(links) == 1
+        assert links[0].endswith(".pdf")
+
+
+# ------------------------------------------------------------------
+# Tests — BFS _follow_syllabus_pages() with depth tracking
+# ------------------------------------------------------------------
+
+
+class TestFollowSyllabusPagesBFS:
+    """Test the multi-level BFS following for syllabus pages."""
+
+    def test_two_level_bfs_finds_pdfs_via_course_pages(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Seed page → course page → PDF found (2-level BFS)."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page lists course links (no direct PDFs, no syllabus keywords)
+        seed_html = """
+        <html><body>
+        <a href="/courses/csci-1302">CSCI 1302</a>
+        <a href="/courses/csci-2610">CSCI 2610</a>
+        </body></html>
+        """
+
+        # Course pages each have a PDF (no "syllabus" in filename)
+        course1_html = """
+        <html><body>
+        <a href="/files/CIS_CSCI_1302_2.pdf">Course PDF</a>
+        </body></html>
+        """
+        course2_html = """
+        <html><body>
+        <a href="/files/CIS_CSCI_2610_1.pdf">Course PDF</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, course1_html, course2_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        # Use a UGA-like school
+        uga = School(
+            unitid=139959,
+            name="University of Georgia",
+            url="https://computing.uga.edu",
+        )
+
+        result = scraper._follow_syllabus_pages(
+            ["https://computing.uga.edu/syllabi"],
+            uga,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        assert len(result) == 2
+        filenames = [r.split("/")[-1] for r in result]
+        assert "CIS_CSCI_1302_2.pdf" in filenames
+        assert "CIS_CSCI_2610_1.pdf" in filenames
+
+    def test_depth_limit_respected(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """BFS does NOT follow links beyond max_depth."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page has a course link
+        seed_html = """
+        <html><body>
+        <a href="/courses/csci-1302">CSCI 1302</a>
+        </body></html>
+        """
+
+        # Course page has another course link (would be depth 2)
+        course_html = """
+        <html><body>
+        <a href="/courses/csci-9999">CSCI 9999</a>
+        <a href="/files/found.pdf">PDF</a>
+        </body></html>
+        """
+
+        # This page should NOT be fetched (depth 2, but max_depth=1)
+        deep_html = """
+        <html><body>
+        <a href="/files/deep.pdf">Deep PDF</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, course_html, deep_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi"],
+            school,
+            max_followed=50,
+            max_depth=1,  # Only 1 level deep
+        )
+
+        # Should only fetch seed + course page (2 fetches), not the deep page
+        assert mock_http_client.get.call_count == 2
+        # Should find found.pdf (broad extraction at depth > 0) but not deep.pdf
+        filenames = [r.split("/")[-1] for r in result]
+        assert "found.pdf" in filenames
+        assert "deep.pdf" not in filenames
+
+    def test_max_followed_cap_across_levels(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """max_followed caps total fetches across all BFS levels."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page lists many course links
+        course_links = "\n".join(
+            f'<a href="/courses/cs{i}">CS {i}</a>' for i in range(100, 120)
+        )
+        seed_html = f"<html><body>{course_links}</body></html>"
+
+        mock_response = MagicMock()
+        mock_response.text = seed_html
+        mock_http_client.get.return_value = mock_response
+
+        scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi"],
+            school,
+            max_followed=5,
+            max_depth=2,
+        )
+
+        # Should stop after 5 fetches total
+        assert mock_http_client.get.call_count == 5
+
+    def test_file_count_threshold_triggers_course_extraction(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """When < 3 files found on a page, course links are extracted."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page: 1 syllabus PDF + course links
+        seed_html = """
+        <html><body>
+        <a href="/files/syllabus-intro.pdf">Intro Syllabus</a>
+        <a href="/courses/cs201">CS 201</a>
+        </body></html>
+        """
+        # Course page with a non-syllabus PDF
+        course_html = """
+        <html><body>
+        <a href="/files/CS201_outline.pdf">Course Outline</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, course_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi"],
+            school,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        # Should find both: the direct syllabus PDF and the one from the course page
+        assert len(result) == 2
+        filenames = [r.split("/")[-1] for r in result]
+        assert "syllabus-intro.pdf" in filenames
+        assert "CS201_outline.pdf" in filenames
+
+    def test_many_files_suppresses_course_extraction(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """When >= 3 files found on a page, course links are NOT followed."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page: 3+ syllabus PDFs + course links
+        seed_html = """
+        <html><body>
+        <a href="/files/syllabus-101.pdf">CS101 Syllabus</a>
+        <a href="/files/syllabus-201.pdf">CS201 Syllabus</a>
+        <a href="/files/syllabus-301.pdf">CS301 Syllabus</a>
+        <a href="/courses/cs401">CS 401</a>
+        </body></html>
+        """
+
+        mock_response = MagicMock()
+        mock_response.text = seed_html
+        mock_http_client.get.return_value = mock_response
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi"],
+            school,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        # Only 1 fetch (the seed page) — course link NOT followed
+        assert mock_http_client.get.call_count == 1
+        assert len(result) == 3
+
+    def test_broad_extraction_at_depth_gt_zero(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """At depth > 0, files without 'syllabus' keyword are found."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        # Seed page with a syllabus page link
+        seed_html = """
+        <html><body>
+        <a href="/dept/syllabi-archive">View Syllabi</a>
+        </body></html>
+        """
+        # Archive page has PDFs without "syllabus" in name
+        archive_html = """
+        <html><body>
+        <a href="/files/CIS_1302_Spring2025.pdf">Spring 2025</a>
+        <a href="/files/CIS_2610_Fall2024.pdf">Fall 2024</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, archive_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        result = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi-page"],
+            school,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        # The archive page at depth 1 should use broad extraction
+        assert len(result) == 2
+        filenames = [r.split("/")[-1] for r in result]
+        assert "CIS_1302_Spring2025.pdf" in filenames
+        assert "CIS_2610_Fall2024.pdf" in filenames

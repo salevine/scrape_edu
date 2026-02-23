@@ -27,7 +27,8 @@ search:
 catalog_follow_depth: 1
 catalog_max_followed: 40
 
-syllabus_max_followed: 20
+syllabus_follow_depth: 2
+syllabus_max_followed: 50
 
 logging:
   level: "INFO"
