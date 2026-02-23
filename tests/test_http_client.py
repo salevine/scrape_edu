@@ -43,7 +43,7 @@ class TestGet:
         assert c._session.headers["User-Agent"] == "TestBot/1.0"
 
     def test_default_user_agent(self, client: HttpClient) -> None:
-        assert client._session.headers["User-Agent"] == "scrape_edu/0.1.0"
+        assert "Chrome" in client._session.headers["User-Agent"]
 
     def test_uses_configured_timeout(
         self, client: HttpClient, mock_rate_limiter: MagicMock

@@ -10,6 +10,16 @@ logger = logging.getLogger("scrape_edu")
 
 T = TypeVar("T")
 
+# Realistic Chrome user-agent string (avoids HeadlessChrome detection).
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+# Script injected into every page to hide the navigator.webdriver flag that
+# many university sites use for bot detection.
+_STEALTH_SCRIPT = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+
 
 class PlaywrightPool:
     """Run Playwright on a dedicated thread so callers from any thread can render.
@@ -103,8 +113,17 @@ class PlaywrightPool:
 
         try:
             playwright = sync_playwright().start()
-            browser = playwright.chromium.launch(headless=True)
-            contexts = [browser.new_context() for _ in range(self.pool_size)]
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            contexts = [
+                browser.new_context(user_agent=_USER_AGENT)
+                for _ in range(self.pool_size)
+            ]
+            # Inject stealth script into every new page created in each context.
+            for ctx in contexts:
+                ctx.add_init_script(_STEALTH_SCRIPT)
             ctx_queue: queue.Queue[BrowserContext] = queue.Queue()
             for ctx in contexts:
                 ctx_queue.put(ctx)

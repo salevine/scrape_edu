@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -151,10 +152,23 @@ class CatalogScraper(BaseScraper):
         dest = catalog_dir / filename
         return self.renderer.render_to_pdf(url, dest)
 
+    # Path patterns for structural/navigation pages that should NOT be followed
+    # when crawling catalog links (e.g. bulletin homepages, search pages).
+    _CATALOG_SKIP_PATTERNS = re.compile(
+        r"/(Home|UnivInfo|BulletinSearch|search|login|account|help|about|contact"
+        r"|privacy|sitemap|accessibility|feedback)/",
+        re.IGNORECASE,
+    )
+    _CATALOG_SKIP_ENDINGS = re.compile(
+        r"(Home/Index|BulletinSearchResult|search\.html|login|sitemap)$",
+        re.IGNORECASE,
+    )
+
     def _extract_catalog_links(self, html: str, base_url: str, school_url: str) -> list[str]:
         """Extract links from HTML that classify as CATALOG or COURSE.
 
-        Only returns links on the school's base domain.
+        Only returns links on the school's base domain. Skips structural
+        navigation pages (homepages, search, login, etc.).
 
         Args:
             html: The HTML content to extract links from.
@@ -177,6 +191,13 @@ class CatalogScraper(BaseScraper):
             seen.add(normalized)
 
             if not is_related_domain(school_url, normalized):
+                continue
+
+            # Skip structural/navigation pages
+            path = urlparse(normalized).path
+            if self._CATALOG_SKIP_PATTERNS.search(path):
+                continue
+            if self._CATALOG_SKIP_ENDINGS.search(path):
                 continue
 
             title = a_tag.get_text(strip=True)

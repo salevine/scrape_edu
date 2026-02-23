@@ -18,7 +18,7 @@ browser_pool_size: 2
 output_dir: "./output"
 ipeds_dir: "./data/ipeds"
 
-user_agent: "scrape_edu/0.1.0 (academic research; +https://github.com/scrape-edu)"
+user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 search:
   provider: "serper"

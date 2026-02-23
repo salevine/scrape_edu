@@ -57,6 +57,10 @@ class BaseScraper(ABC):
     def _url_to_filename(url: str, ext: str) -> str:
         """Generate a safe, unique filename from a URL.
 
+        Uses multiple path segments when the last segment is too generic
+        (e.g. "Index", "Details") to avoid collisions between URLs like
+        ``/Home/Index`` vs ``/Course/Index``.
+
         Includes the subdomain prefix when the URL is on a subdomain so that
         URLs with identical paths on different subdomains (e.g.
         ``scs.gatech.edu/people/faculty`` vs ``cc.gatech.edu/people/faculty``)
@@ -74,13 +78,32 @@ class BaseScraper(ABC):
         if hostname.startswith("www."):
             hostname = hostname[4:]
 
-        # Derive the name from the last path segment
+        # Split path into non-empty segments
         path = parsed.path.rstrip("/")
-        if path:
-            name = path.split("/")[-1]
-            # Remove existing extension if present
-            if "." in name:
-                name = name.rsplit(".", 1)[0]
+        segments = [s for s in path.split("/") if s] if path else []
+
+        # Include query params as part of the name when present (e.g. ?IDc=ARTS)
+        query_suffix = ""
+        if parsed.query:
+            query_suffix = parsed.query
+
+        if segments:
+            last = segments[-1]
+            # Remove file extension from last segment
+            if "." in last:
+                last = last.rsplit(".", 1)[0]
+                segments[-1] = last
+
+            # Use up to 2 path segments when the last one is generic
+            _generic = {"index", "details", "all", "list", "view", "page", "content"}
+            if last.lower() in _generic and len(segments) >= 2:
+                name = "-".join(segments[-2:])
+            else:
+                name = last
+
+            # Append query params to disambiguate (e.g. Details/73962 vs Details/73962?IDc=ARTS)
+            if query_suffix:
+                name = f"{name}-{query_suffix}"
         else:
             name = hostname.replace(".", "-")
 

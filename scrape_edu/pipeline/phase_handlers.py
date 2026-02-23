@@ -139,6 +139,11 @@ def build_phase_handlers(
                     syllabus_urls.append(url)
             discovery_method = "serper+bfs" if serper_client else "bfs"
 
+        # Deduplicate all URL lists before storing
+        catalog_urls = list(dict.fromkeys(catalog_urls))
+        faculty_urls = list(dict.fromkeys(faculty_urls))
+        syllabus_urls = list(dict.fromkeys(syllabus_urls))
+
         # Store discovered URLs in discovery phase data for downstream scrapers
         discovery_data = metadata._metadata.setdefault("phases", {}).setdefault("discovery", {})
         discovery_data["catalog_urls"] = catalog_urls
