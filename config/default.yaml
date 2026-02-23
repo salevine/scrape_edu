@@ -25,7 +25,7 @@ search:
   queries_per_school: 5
 
 catalog_follow_depth: 1
-catalog_max_followed: 20
+catalog_max_followed: 40
 
 logging:
   level: "INFO"
