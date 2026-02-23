@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import signal
 import threading
@@ -9,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from scrape_edu.data.manifest import ManifestManager, SchoolMetadata, SchoolStatus
 from scrape_edu.data.school import School
@@ -273,10 +275,16 @@ class Orchestrator:
             for name, entry in phases.items()
         }
 
-        # Robots info if available
-        robots = phases.get("robots", {}).get("robots_info")
+        # Check downloaded URLs against robots.txt disallow patterns.
+        # Only include robots info if we actually violated a rule.
+        robots_info = phases.get("robots", {}).get("robots_info", {})
+        robots_violations = self._check_robots_violations(
+            downloaded_urls=list(downloaded.keys()),
+            disallow_patterns=robots_info.get("disallow_patterns", []),
+            robots_url=robots_info.get("url", ""),
+        )
 
-        return {
+        result: dict = {
             "phases": phase_statuses,
             "discovery": {
                 "catalog_urls": catalog_urls,
@@ -285,9 +293,41 @@ class Orchestrator:
             },
             "files_downloaded": files,
             "file_count": len(files),
-            "robots": robots,
             "errors": data.get("errors", []),
         }
+
+        if robots_violations:
+            result["robots_violations"] = robots_violations
+
+        return result
+
+    @staticmethod
+    def _check_robots_violations(
+        downloaded_urls: list[str],
+        disallow_patterns: list[str],
+        robots_url: str,
+    ) -> list[dict] | None:
+        """Check if any downloaded URLs match robots.txt disallow rules.
+
+        Returns a list of violation dicts if any were found, or None.
+        """
+        if not disallow_patterns or not downloaded_urls:
+            return None
+
+        violations: list[dict] = []
+        for url in downloaded_urls:
+            path = urlparse(url).path
+            for pattern in disallow_patterns:
+                # robots.txt patterns: path prefix match, with * glob support
+                if pattern.endswith("*"):
+                    if fnmatch.fnmatch(path, pattern):
+                        violations.append({"url": url, "matched_rule": pattern})
+                        break
+                elif path.startswith(pattern):
+                    violations.append({"url": url, "matched_rule": pattern})
+                    break
+
+        return violations if violations else None
 
     def _get_target_schools(
         self, schools_filter: list[str] | None

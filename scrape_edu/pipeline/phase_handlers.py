@@ -57,7 +57,7 @@ def build_phase_handlers(
         discovery_data["robots_info"] = {
             "url": result["url"],
             "exists": result["exists"],
-            "disallow_count": len(result.get("disallow_patterns", [])),
+            "disallow_patterns": result.get("disallow_patterns", []),
             "crawl_delay": result.get("crawl_delay"),
             "sitemaps": result.get("sitemaps", []),
         }
