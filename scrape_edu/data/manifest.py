@@ -216,6 +216,25 @@ class ManifestManager:
                 logger.info("Flagged %d schools for re-scrape", count)
             return count
 
+    def update_school_results(self, slug: str, results: dict) -> None:
+        """Store a results summary for a completed school.
+
+        Args:
+            slug: School identifier.
+            results: Dict with retrieval results (discovered URLs, downloaded
+                files, phase statuses, etc.).
+        """
+        with self._lock:
+            school = self._manifest["schools"].get(slug)
+            if school is None:
+                logger.warning(
+                    "Cannot update results for unknown school: %s", slug
+                )
+                return
+            school["results"] = results
+            school["updated_at"] = _now_iso()
+            self._save()
+
     def get_summary(self) -> dict:
         """Return a summary of school counts grouped by status.
 

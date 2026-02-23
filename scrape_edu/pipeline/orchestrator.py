@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from scrape_edu.data.manifest import ManifestManager, SchoolStatus
+from scrape_edu.data.manifest import ManifestManager, SchoolMetadata, SchoolStatus
 from scrape_edu.data.school import School
 from scrape_edu.pipeline.phases import Phase
 from scrape_edu.pipeline.school_worker import SchoolWorker
@@ -232,14 +232,62 @@ class Orchestrator:
 
         success = worker.run(phases_filter)
 
-        # Update manifest status
+        # Update manifest status and store results summary
         if success:
             self.manifest.update_school_status(school.slug, SchoolStatus.COMPLETED)
+            results_summary = self._build_results_summary(school)
+            self.manifest.update_school_results(school.slug, results_summary)
         elif not self.shutdown_event.is_set():
             self.manifest.update_school_status(school.slug, SchoolStatus.FAILED)
         # If shutdown, leave as SCRAPING -- will be reset to PENDING on next run
 
         return success
+
+    def _build_results_summary(self, school: School) -> dict:
+        """Read per-school metadata and build a summary for the manifest."""
+        school_dir = self.output_dir / school.slug
+        meta = SchoolMetadata(school_dir)
+        data = meta._metadata
+
+        phases = data.get("phases", {})
+        discovery = phases.get("discovery", {})
+        downloaded = data.get("downloaded_urls", {})
+
+        # Collect discovered URLs by type
+        catalog_urls = discovery.get("catalog_urls", [])
+        faculty_urls = discovery.get("faculty_urls", [])
+        syllabus_urls = discovery.get("syllabus_urls", [])
+
+        # Build list of downloaded files with source URL and local path
+        files = []
+        for url, info in downloaded.items():
+            files.append({
+                "url": url,
+                "filepath": info.get("filepath", ""),
+                "downloaded_at": info.get("downloaded_at", ""),
+            })
+
+        # Phase status summary
+        phase_statuses = {
+            name: entry.get("status", "unknown")
+            for name, entry in phases.items()
+        }
+
+        # Robots info if available
+        robots = phases.get("robots", {}).get("robots_info")
+
+        return {
+            "phases": phase_statuses,
+            "discovery": {
+                "catalog_urls": catalog_urls,
+                "faculty_urls": faculty_urls,
+                "syllabus_urls": syllabus_urls,
+            },
+            "files_downloaded": files,
+            "file_count": len(files),
+            "robots": robots,
+            "errors": data.get("errors", []),
+        }
 
     def _get_target_schools(
         self, schools_filter: list[str] | None
