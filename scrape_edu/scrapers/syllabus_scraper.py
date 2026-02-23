@@ -67,7 +67,8 @@ class SyllabusScraper(BaseScraper):
                 continue
 
             try:
-                filename = self._url_to_filename(url)
+                ext = self._get_url_extension(url)
+                filename = self._url_to_filename(url, ext)
                 dest = syllabi_dir / filename
                 self.client.download(url, dest)
 
@@ -127,21 +128,14 @@ class SyllabusScraper(BaseScraper):
 
         return links
 
-    def _url_to_filename(self, url: str) -> str:
-        """Generate a safe filename from a URL, preserving the extension."""
-        parsed = urlparse(url)
-        path = parsed.path.rstrip("/")
+    # _url_to_filename inherited from BaseScraper
+
+    @staticmethod
+    def _get_url_extension(url: str) -> str:
+        """Extract the file extension from a URL, defaulting to .pdf."""
+        path = urlparse(url).path.rstrip("/")
         if path:
-            name = path.split("/")[-1]
-        else:
-            name = "syllabus.pdf"
-
-        # If no extension, default to .pdf
-        if "." not in name:
-            name = name + ".pdf"
-
-        safe_name = "".join(
-            c if c.isalnum() or c in "-_." else "-" for c in name
-        )
-        safe_name = safe_name.strip("-") or "syllabus.pdf"
-        return safe_name
+            last_segment = path.split("/")[-1]
+            if "." in last_segment:
+                return "." + last_segment.rsplit(".", 1)[1].lower()
+        return ".pdf"

@@ -186,23 +186,4 @@ class CatalogScraper(BaseScraper):
 
         return links
 
-    def _url_to_filename(self, url: str, ext: str) -> str:
-        """Generate a safe filename from a URL."""
-        parsed = urlparse(url)
-        # Use the last path segment, or domain if no path
-        path = parsed.path.rstrip("/")
-        if path:
-            name = path.split("/")[-1]
-            # Remove existing extension if present
-            if "." in name:
-                name = name.rsplit(".", 1)[0]
-        else:
-            name = parsed.netloc.replace(".", "-")
-
-        # Clean the name
-        safe_name = "".join(
-            c if c.isalnum() or c in "-_" else "-" for c in name
-        )
-        safe_name = safe_name.strip("-") or "catalog"
-
-        return f"{safe_name}{ext}"
+    # _url_to_filename inherited from BaseScraper

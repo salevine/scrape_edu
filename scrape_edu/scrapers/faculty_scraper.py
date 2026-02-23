@@ -7,8 +7,6 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
-
 from bs4 import BeautifulSoup
 
 from scrape_edu.data.manifest import SchoolMetadata
@@ -193,18 +191,4 @@ class FacultyScraper(BaseScraper):
             profile_url=profile_url,
         )
 
-    def _url_to_filename(self, url: str, ext: str) -> str:
-        """Generate a safe filename from a URL."""
-        parsed = urlparse(url)
-        path = parsed.path.rstrip("/")
-        if path:
-            name = path.split("/")[-1]
-            if "." in name:
-                name = name.rsplit(".", 1)[0]
-        else:
-            name = parsed.netloc.replace(".", "-")
-        safe_name = "".join(
-            c if c.isalnum() or c in "-_" else "-" for c in name
-        )
-        safe_name = safe_name.strip("-") or "faculty"
-        return f"{safe_name}{ext}"
+    # _url_to_filename inherited from BaseScraper

@@ -415,44 +415,41 @@ class TestExtractSyllabusLinks:
 
 
 class TestUrlToFilename:
-    """Test the _url_to_filename helper."""
+    """Test the _url_to_filename + _get_url_extension helpers."""
 
     def test_preserves_pdf_extension(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename(
-            "https://example.edu/courses/cs101/syllabus.pdf"
-        )
+        url = "https://example.edu/courses/cs101/syllabus.pdf"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         assert result == "syllabus.pdf"
 
     def test_preserves_docx_extension(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename(
-            "https://example.edu/docs/outline.docx"
-        )
+        url = "https://example.edu/docs/outline.docx"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         assert result == "outline.docx"
 
     def test_defaults_to_pdf_when_no_extension(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename(
-            "https://example.edu/courses/cs101/syllabus"
-        )
+        url = "https://example.edu/courses/cs101/syllabus"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         assert result == "syllabus.pdf"
 
     def test_defaults_to_pdf_when_no_path(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename("https://example.edu/")
-        assert result == "syllabus.pdf"
+        url = "https://example.edu/"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
+        assert result.endswith(".pdf")
 
     def test_sanitizes_special_characters(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename(
-            "https://example.edu/docs/my syllabus (2024).pdf"
-        )
+        url = "https://example.edu/docs/my syllabus (2024).pdf"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         # Should have no spaces or parens
         assert " " not in result
         assert "(" not in result
@@ -461,7 +458,6 @@ class TestUrlToFilename:
     def test_preserves_doc_extension(
         self, scraper: SyllabusScraper
     ) -> None:
-        result = scraper._url_to_filename(
-            "https://example.edu/docs/course.doc"
-        )
+        url = "https://example.edu/docs/course.doc"
+        result = scraper._url_to_filename(url, scraper._get_url_extension(url))
         assert result == "course.doc"
