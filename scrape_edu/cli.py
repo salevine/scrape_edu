@@ -4,6 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from scrape_edu.browser.playwright_pool import PlaywrightPool
+from scrape_edu.browser.renderer import PageRenderer
 from scrape_edu.config import load_config
 from scrape_edu.data.ipeds_loader import load_schools
 from scrape_edu.data.manifest import ManifestManager
@@ -163,11 +165,21 @@ def cmd_run(args) -> int:
     if not serper_client:
         print("Warning: No SERPER_API_KEY set. Discovery will be limited.")
 
+    # Set up Playwright renderer for HTML-to-PDF catalog conversion
+    pool = PlaywrightPool(pool_size=min(workers, 3))
+    renderer = None
+    try:
+        pool.start()
+        renderer = PageRenderer(pool)
+    except RuntimeError as e:
+        print(f"Warning: Playwright unavailable, HTML catalogs will be skipped: {e}")
+
     # Build phase handlers
     phase_handlers = build_phase_handlers(
         http_client=http_client,
         config=config,
         serper_client=serper_client,
+        renderer=renderer,
     )
 
     # Run pipeline
@@ -186,6 +198,7 @@ def cmd_run(args) -> int:
         )
     finally:
         http_client.close()
+        pool.stop()
 
     print(f"\nPipeline complete:")
     print(f"  Completed: {results.get('completed', 0)}")
