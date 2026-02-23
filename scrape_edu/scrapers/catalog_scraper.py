@@ -99,7 +99,7 @@ class CatalogScraper(BaseScraper):
 
                 # Follow links from HTML pages at allowed depth
                 if html_content and depth < max_follow_depth and followed_count < max_followed:
-                    new_links = self._extract_catalog_links(html_content, url)
+                    new_links = self._extract_catalog_links(html_content, url, school.url)
                     for link in new_links:
                         if normalize_url(link) not in processed:
                             queue.append((link, depth + 1))
@@ -151,10 +151,15 @@ class CatalogScraper(BaseScraper):
         dest = catalog_dir / filename
         return self.renderer.render_to_pdf(url, dest)
 
-    def _extract_catalog_links(self, html: str, base_url: str) -> list[str]:
+    def _extract_catalog_links(self, html: str, base_url: str, school_url: str) -> list[str]:
         """Extract links from HTML that classify as CATALOG or COURSE.
 
-        Only returns links on a related domain (same base .edu).
+        Only returns links on the school's base domain.
+
+        Args:
+            html: The HTML content to extract links from.
+            base_url: The URL of the page (used to resolve relative links).
+            school_url: The school's homepage URL (used for domain filtering).
         """
         soup = BeautifulSoup(html, "lxml")
         links: list[str] = []
@@ -171,7 +176,7 @@ class CatalogScraper(BaseScraper):
                 continue
             seen.add(normalized)
 
-            if not is_related_domain(base_url, normalized):
+            if not is_related_domain(school_url, normalized):
                 continue
 
             title = a_tag.get_text(strip=True)

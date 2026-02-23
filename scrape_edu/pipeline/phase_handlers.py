@@ -10,13 +10,14 @@ from scrape_edu.data.manifest import SchoolMetadata
 from scrape_edu.data.school import School
 from scrape_edu.discovery.homepage_crawler import HomepageCrawler
 from scrape_edu.discovery.serper_search import SerperClient
-from scrape_edu.discovery.url_classifier import UrlCategory, classify_search_results
+from scrape_edu.discovery.url_classifier import UrlCategory, classify_search_results, classify_url
 from scrape_edu.net.http_client import HttpClient
 from scrape_edu.pipeline.phases import Phase
 from scrape_edu.scrapers.catalog_scraper import CatalogScraper
 from scrape_edu.scrapers.faculty_scraper import FacultyScraper
 from scrape_edu.scrapers.robots_checker import RobotsChecker
 from scrape_edu.scrapers.syllabus_scraper import SyllabusScraper
+from scrape_edu.utils.url_utils import extract_base_domain, is_related_domain
 
 logger = logging.getLogger("scrape_edu")
 
@@ -61,6 +62,10 @@ def build_phase_handlers(
             "sitemaps": result.get("sitemaps", []),
         }
 
+    def _is_school_url(url: str, school_base_domain: str) -> bool:
+        """Return True if *url* belongs to the school's base domain."""
+        return extract_base_domain(url) == school_base_domain
+
     def handle_discovery(
         school: School, school_dir: Path, metadata: SchoolMetadata, config: dict
     ) -> None:
@@ -68,6 +73,7 @@ def build_phase_handlers(
         faculty_urls: list[str] = []
         syllabus_urls: list[str] = []
         discovery_method = "serper"
+        school_base = extract_base_domain(school.url)
 
         # Pass 1: Serper search
         if serper_client:
@@ -78,9 +84,36 @@ def build_phase_handlers(
                 all_results.extend(results[key])
 
             classified = classify_search_results(all_results)
-            catalog_urls = [r["link"] for r in classified.get("catalog", []) if "link" in r]
-            faculty_urls = [r["link"] for r in classified.get("faculty", []) if "link" in r]
-            syllabus_urls = [r["link"] for r in classified.get("syllabus", []) if "link" in r]
+            catalog_urls = [
+                r["link"] for r in classified.get("catalog", [])
+                if "link" in r and _is_school_url(r["link"], school_base)
+            ]
+            faculty_urls = [
+                r["link"] for r in classified.get("faculty", [])
+                if "link" in r and _is_school_url(r["link"], school_base)
+            ]
+            syllabus_urls = [
+                r["link"] for r in classified.get("syllabus", [])
+                if "link" in r and _is_school_url(r["link"], school_base)
+            ]
+
+        # Pass 1b: Probe catalog.{base_domain} if no catalog URLs found
+        if not catalog_urls:
+            probe_url = f"https://catalog.{school_base}/"
+            try:
+                resp = http_client.get(probe_url)
+                cat = classify_url(probe_url, title=resp.text[:500] if resp.text else "")
+                # Accept if it classified as catalog, or just trust the subdomain
+                catalog_urls.append(probe_url)
+                logger.info(
+                    "Catalog subdomain probe succeeded",
+                    extra={"school": school.slug, "url": probe_url},
+                )
+            except Exception:
+                logger.debug(
+                    "Catalog subdomain probe failed",
+                    extra={"school": school.slug, "url": probe_url},
+                )
 
         # Pass 2: BFS fallback if Serper results are sparse
         has_catalog = len(catalog_urls) >= 1
