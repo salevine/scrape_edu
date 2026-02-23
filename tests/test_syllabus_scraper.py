@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call
@@ -11,7 +12,7 @@ import pytest
 from scrape_edu.data.manifest import SchoolMetadata
 from scrape_edu.data.school import School
 from scrape_edu.net.http_client import HttpClient
-from scrape_edu.scrapers.syllabus_scraper import SyllabusScraper
+from scrape_edu.scrapers.syllabus_scraper import BfsStats, SyllabusScraper
 
 
 # ------------------------------------------------------------------
@@ -496,7 +497,7 @@ class TestFollowSyllabusPages:
         mock_response.text = archive_html
         mock_http_client.get.return_value = mock_response
 
-        result = scraper._follow_syllabus_pages(
+        result, stats = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi/archive.php"],
             school,
             max_followed=20,
@@ -519,7 +520,7 @@ class TestFollowSyllabusPages:
         mock_http_client.get.return_value = mock_response
 
         pages = [f"https://www.mit.edu/page{i}.php" for i in range(10)]
-        scraper._follow_syllabus_pages(pages, school, max_followed=3)
+        _, _ = scraper._follow_syllabus_pages(pages, school, max_followed=3)
 
         assert mock_http_client.get.call_count == 3
 
@@ -541,7 +542,7 @@ class TestFollowSyllabusPages:
         mock_response.text = archive_html
         mock_http_client.get.return_value = mock_response
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/archive.php"],
             school,
             max_followed=20,
@@ -571,7 +572,7 @@ class TestFollowSyllabusPages:
             good_response,
         ]
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             [
                 "https://www.mit.edu/broken.php",
                 "https://www.mit.edu/working.php",
@@ -601,7 +602,7 @@ class TestFollowSyllabusPages:
         mock_response.text = archive_html
         mock_http_client.get.return_value = mock_response
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/archive.php"],
             school,
             max_followed=20,
@@ -910,7 +911,7 @@ class TestFollowSyllabusPagesBFS:
             url="https://computing.uga.edu",
         )
 
-        result = scraper._follow_syllabus_pages(
+        result, stats = scraper._follow_syllabus_pages(
             ["https://computing.uga.edu/syllabi"],
             uga,
             max_followed=50,
@@ -959,7 +960,7 @@ class TestFollowSyllabusPagesBFS:
             responses.append(r)
         mock_http_client.get.side_effect = responses
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi"],
             school,
             max_followed=50,
@@ -991,7 +992,7 @@ class TestFollowSyllabusPagesBFS:
         mock_response.text = seed_html
         mock_http_client.get.return_value = mock_response
 
-        scraper._follow_syllabus_pages(
+        _, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi"],
             school,
             max_followed=5,
@@ -1030,7 +1031,7 @@ class TestFollowSyllabusPagesBFS:
             responses.append(r)
         mock_http_client.get.side_effect = responses
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi"],
             school,
             max_followed=50,
@@ -1065,7 +1066,7 @@ class TestFollowSyllabusPagesBFS:
         mock_response.text = seed_html
         mock_http_client.get.return_value = mock_response
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi"],
             school,
             max_followed=50,
@@ -1105,7 +1106,7 @@ class TestFollowSyllabusPagesBFS:
             responses.append(r)
         mock_http_client.get.side_effect = responses
 
-        result = scraper._follow_syllabus_pages(
+        result, _ = scraper._follow_syllabus_pages(
             ["https://www.mit.edu/syllabi-page"],
             school,
             max_followed=50,
@@ -1117,3 +1118,171 @@ class TestFollowSyllabusPagesBFS:
         filenames = [r.split("/")[-1] for r in result]
         assert "CIS_1302_Spring2025.pdf" in filenames
         assert "CIS_2610_Fall2024.pdf" in filenames
+
+
+# ------------------------------------------------------------------
+# Tests — BfsStats
+# ------------------------------------------------------------------
+
+
+class TestBfsStats:
+    """Test that BfsStats are returned correctly from _follow_syllabus_pages."""
+
+    def test_bfs_stats_returned(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """BfsStats fields match expected values for a 2-level BFS scenario."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        seed_html = """
+        <html><body>
+        <a href="/courses/csci-1302">CSCI 1302</a>
+        <a href="/courses/csci-2610">CSCI 2610</a>
+        </body></html>
+        """
+        course1_html = """
+        <html><body>
+        <a href="/files/CIS_CSCI_1302.pdf">Course PDF</a>
+        </body></html>
+        """
+        course2_html = """
+        <html><body>
+        <a href="/files/CIS_CSCI_2610.pdf">Course PDF</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, course1_html, course2_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        uga = School(
+            unitid=139959,
+            name="University of Georgia",
+            url="https://computing.uga.edu",
+        )
+
+        _, stats = scraper._follow_syllabus_pages(
+            ["https://computing.uga.edu/syllabi"],
+            uga,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        assert stats.pages_followed == 3
+        assert stats.max_depth_reached == 1
+        assert stats.files_found_by_following == 2
+        assert stats.course_links_found == 2
+
+    def test_bfs_stats_zero_for_empty_input(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """All stats are 0 when no pages are given."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        _, stats = scraper._follow_syllabus_pages(
+            [], school, max_followed=50, max_depth=2,
+        )
+
+        assert stats.pages_followed == 0
+        assert stats.max_depth_reached == 0
+        assert stats.files_found_by_following == 0
+        assert stats.course_links_found == 0
+
+
+# ------------------------------------------------------------------
+# Tests — Stats persistence in scrape()
+# ------------------------------------------------------------------
+
+
+class TestScrapeStatsInMetadata:
+    """Test that scrape() persists syllabi stats in metadata."""
+
+    def test_scrape_stores_stats_in_metadata(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+        metadata: SchoolMetadata,
+    ) -> None:
+        """metadata phases.syllabi has expected stat keys after scrape()."""
+        mock_http_client.download.return_value = Path("dummy.pdf")
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        scraper.scrape(school, school_dir, metadata)
+
+        syllabi = metadata._metadata["phases"]["syllabi"]
+        assert "seed_urls_count" in syllabi
+        assert "files_downloaded" in syllabi
+        assert "files_failed" in syllabi
+        assert "pages_followed" in syllabi
+        assert "files_found_by_following" in syllabi
+        assert "course_links_found" in syllabi
+        assert syllabi["files_downloaded"] == 2
+        assert syllabi["files_failed"] == 0
+
+    def test_scrape_stores_stats_when_no_urls(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+    ) -> None:
+        """Stats with zeros stored even when discovery yields nothing."""
+        metadata = SchoolMetadata(school_dir)
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        scraper.scrape(school, school_dir, metadata)
+
+        syllabi = metadata._metadata["phases"]["syllabi"]
+        assert syllabi["seed_urls_count"] == 0
+        assert syllabi["files_downloaded"] == 0
+
+    def test_scrape_counts_downloads_and_failures(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+        metadata: SchoolMetadata,
+    ) -> None:
+        """files_downloaded and files_failed match mock behavior."""
+        mock_http_client.download.side_effect = [
+            Exception("Timeout"),
+            Path("dummy.pdf"),
+        ]
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        scraper.scrape(school, school_dir, metadata)
+
+        syllabi = metadata._metadata["phases"]["syllabi"]
+        assert syllabi["files_downloaded"] == 1
+        assert syllabi["files_failed"] == 1
+
+    def test_scrape_logs_funnel_summary(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+        metadata: SchoolMetadata,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """caplog contains 'Syllabi phase complete' with expected extra fields."""
+        mock_http_client.download.return_value = Path("dummy.pdf")
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        with caplog.at_level(logging.INFO, logger="scrape_edu"):
+            scraper.scrape(school, school_dir, metadata)
+
+        funnel_records = [
+            r for r in caplog.records if r.message == "Syllabi phase complete"
+        ]
+        assert len(funnel_records) == 1
+        record = funnel_records[0]
+        assert record.school == school.slug
+        assert record.downloaded == 2
+        assert record.failed == 0

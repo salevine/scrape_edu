@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -19,6 +20,17 @@ from scrape_edu.scrapers.base import BaseScraper
 from scrape_edu.utils.url_utils import is_related_domain
 
 logger = logging.getLogger("scrape_edu")
+
+
+@dataclass
+class BfsStats:
+    """Statistics from the BFS syllabus page-following process."""
+
+    pages_followed: int = 0
+    max_depth_reached: int = 0
+    files_found_by_following: int = 0
+    course_links_found: int = 0
+
 
 # File extensions that are direct downloads (not HTML pages to follow)
 _DIRECT_FILE_EXTENSIONS = frozenset({
@@ -76,7 +88,7 @@ class SyllabusScraper(BaseScraper):
         max_followed = self.config.get("syllabus_max_followed", 50)
         max_depth = self.config.get("syllabus_follow_depth", 2)
         file_urls, page_urls = self._split_files_and_pages(unique_urls)
-        followed_file_urls = self._follow_syllabus_pages(
+        followed_file_urls, bfs_stats = self._follow_syllabus_pages(
             page_urls, school, max_followed, max_depth,
         )
 
@@ -92,10 +104,24 @@ class SyllabusScraper(BaseScraper):
             logger.info(
                 "No syllabus URLs found", extra={"school": school.slug}
             )
+            self._store_syllabi_stats(
+                metadata, school,
+                seed_urls_count=len(unique_urls),
+                seed_files_count=len(file_urls),
+                bfs_stats=bfs_stats,
+                files_downloaded=0,
+                files_failed=0,
+                files_skipped=0,
+            )
             return
+
+        files_downloaded = 0
+        files_failed = 0
+        files_skipped = 0
 
         for url in all_urls:
             if self._skip_if_downloaded(url, metadata):
+                files_skipped += 1
                 continue
 
             try:
@@ -106,11 +132,13 @@ class SyllabusScraper(BaseScraper):
 
                 metadata.add_downloaded_url(url, str(dest))
                 metadata.save()
+                files_downloaded += 1
                 logger.info(
                     "Downloaded syllabus",
                     extra={"school": school.slug, "url": url},
                 )
             except Exception as e:
+                files_failed += 1
                 logger.warning(
                     "Failed to download syllabus",
                     extra={
@@ -119,6 +147,60 @@ class SyllabusScraper(BaseScraper):
                         "error": str(e),
                     },
                 )
+
+        self._store_syllabi_stats(
+            metadata, school,
+            seed_urls_count=len(unique_urls),
+            seed_files_count=len(file_urls),
+            bfs_stats=bfs_stats,
+            files_downloaded=files_downloaded,
+            files_failed=files_failed,
+            files_skipped=files_skipped,
+        )
+
+    @staticmethod
+    def _store_syllabi_stats(
+        metadata: SchoolMetadata,
+        school: School,
+        *,
+        seed_urls_count: int,
+        seed_files_count: int,
+        bfs_stats: BfsStats,
+        files_downloaded: int,
+        files_failed: int,
+        files_skipped: int,
+    ) -> None:
+        """Persist syllabi phase statistics into metadata and log a summary."""
+        syllabi_phase = metadata._metadata.setdefault(
+            "phases", {}
+        ).setdefault("syllabi", {})
+        syllabi_phase.update({
+            "seed_urls_count": seed_urls_count,
+            "seed_files_count": seed_files_count,
+            "pages_followed": bfs_stats.pages_followed,
+            "max_depth_reached": bfs_stats.max_depth_reached,
+            "files_found_by_following": bfs_stats.files_found_by_following,
+            "course_links_found": bfs_stats.course_links_found,
+            "files_downloaded": files_downloaded,
+            "files_failed": files_failed,
+            "files_skipped": files_skipped,
+        })
+        metadata.save()
+
+        logger.info(
+            "Syllabi phase complete",
+            extra={
+                "school": school.slug,
+                "seed_urls": seed_urls_count,
+                "seed_files": seed_files_count,
+                "pages_followed": bfs_stats.pages_followed,
+                "files_from_following": bfs_stats.files_found_by_following,
+                "course_links_found": bfs_stats.course_links_found,
+                "downloaded": files_downloaded,
+                "failed": files_failed,
+                "skipped": files_skipped,
+            },
+        )
 
     @staticmethod
     def _build_filepath_to_url(metadata: SchoolMetadata) -> dict[str, str]:
@@ -282,7 +364,7 @@ class SyllabusScraper(BaseScraper):
         school: School,
         max_followed: int,
         max_depth: int = 1,
-    ) -> list[str]:
+    ) -> tuple[list[str], BfsStats]:
         """BFS through syllabus pages to find direct file links.
 
         Handles multi-level patterns:
@@ -305,7 +387,7 @@ class SyllabusScraper(BaseScraper):
             max_depth: Maximum BFS depth (0 = seed pages only).
 
         Returns:
-            List of direct file URLs found across all levels.
+            Tuple of (direct file URLs found, BFS statistics).
         """
         queue: deque[tuple[str, int]] = deque(
             (url, 0) for url in page_urls
@@ -314,6 +396,17 @@ class SyllabusScraper(BaseScraper):
         found_files: list[str] = []
         found_files_set: set[str] = set()
         followed = 0
+        stats = BfsStats()
+
+        logger.info(
+            "BFS start",
+            extra={
+                "school": school.slug,
+                "queue_size": len(queue),
+                "max_depth": max_depth,
+                "max_followed": max_followed,
+            },
+        )
 
         while queue and followed < max_followed:
             url, depth = queue.popleft()
@@ -325,6 +418,9 @@ class SyllabusScraper(BaseScraper):
                 response = self.client.get(url)
                 html = response.text
                 followed += 1
+                stats.pages_followed += 1
+                if depth > stats.max_depth_reached:
+                    stats.max_depth_reached = depth
             except Exception as e:
                 logger.debug(
                     "Failed to follow syllabus page",
@@ -347,6 +443,7 @@ class SyllabusScraper(BaseScraper):
                     if link not in found_files_set:
                         found_files_set.add(link)
                         found_files.append(link)
+                        stats.files_found_by_following += 1
                     file_count += 1
                 elif link not in processed and depth + 1 <= max_depth:
                     queue.append((link, depth + 1))
@@ -358,6 +455,7 @@ class SyllabusScraper(BaseScraper):
                     if link not in found_files_set:
                         found_files_set.add(link)
                         found_files.append(link)
+                        stats.files_found_by_following += 1
                     file_count += 1
 
             # --- If few files found, try course link extraction ---
@@ -365,12 +463,23 @@ class SyllabusScraper(BaseScraper):
                 course_links = self._extract_course_links(
                     html, url, school.url
                 )
+                if course_links:
+                    stats.course_links_found += len(course_links)
+                    logger.info(
+                        "Course extraction triggered",
+                        extra={
+                            "school": school.slug,
+                            "page_url": url,
+                            "depth": depth,
+                            "course_links_count": len(course_links),
+                        },
+                    )
                 for link in course_links:
                     if link not in processed:
                         queue.append((link, depth + 1))
 
             if found_files or syl_links:
-                logger.info(
+                logger.debug(
                     "Followed syllabus page",
                     extra={
                         "school": school.slug,
@@ -380,7 +489,18 @@ class SyllabusScraper(BaseScraper):
                     },
                 )
 
-        return found_files
+        logger.info(
+            "BFS complete",
+            extra={
+                "school": school.slug,
+                "pages_followed": stats.pages_followed,
+                "total_files_found": stats.files_found_by_following,
+                "max_depth_reached": stats.max_depth_reached,
+                "course_links_found": stats.course_links_found,
+            },
+        )
+
+        return found_files, stats
 
     @staticmethod
     def _get_url_extension(url: str) -> str:

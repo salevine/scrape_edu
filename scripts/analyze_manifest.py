@@ -19,6 +19,7 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 
 def load_manifest(output_dir: Path) -> dict:
@@ -183,6 +184,39 @@ def analyze(output_dir: Path) -> dict:
                 else:
                     file_counts["(no ext)"] += 1
 
+    # --- Per-school syllabi results ---
+    syllabi_results: list[dict] = []
+    for slug in sorted(schools):
+        metadata = load_school_metadata(output_dir, slug)
+        if metadata is None:
+            continue
+        syllabi_phase = metadata.get("phases", {}).get("syllabi")
+        if syllabi_phase is None:
+            continue
+        entry: dict[str, Any] = {"slug": slug}
+        entry["seed_urls_count"] = syllabi_phase.get("seed_urls_count", 0)
+        entry["seed_files_count"] = syllabi_phase.get("seed_files_count", 0)
+        entry["files_downloaded"] = syllabi_phase.get("files_downloaded", 0)
+        entry["files_failed"] = syllabi_phase.get("files_failed", 0)
+        entry["files_found_by_following"] = syllabi_phase.get(
+            "files_found_by_following", 0
+        )
+        entry["pages_followed"] = syllabi_phase.get("pages_followed", 0)
+        entry["course_links_found"] = syllabi_phase.get(
+            "course_links_found", 0
+        )
+        # Flag failure modes
+        flags: list[str] = []
+        if (
+            entry["seed_urls_count"] > 0
+            and entry["files_downloaded"] == 0
+        ):
+            flags.append("seed_urls>0 but 0 files downloaded")
+        if entry["seed_urls_count"] == 0:
+            flags.append("no seed URLs from discovery")
+        entry["flags"] = flags
+        syllabi_results.append(entry)
+
     # --- Disk usage ---
     total_bytes = get_dir_size(output_dir)
 
@@ -200,6 +234,7 @@ def analyze(output_dir: Path) -> dict:
             "total_files": total_files,
             "by_extension": dict(file_counts.most_common()),
         },
+        "syllabi_results": syllabi_results,
         "disk_usage": {
             "total_bytes": total_bytes,
             "total_human": format_bytes(total_bytes),
@@ -252,6 +287,24 @@ def print_human_readable(result: dict) -> None:
     if fc["by_extension"]:
         for ext, count in fc["by_extension"].items():
             print(f"  {ext:<10s} {count:>5d}")
+
+    # Per-school syllabi results
+    syllabi = result.get("syllabi_results", [])
+    if syllabi:
+        print("\nSyllabus Results by School:")
+        for entry in syllabi:
+            slug = entry["slug"]
+            downloaded = entry["files_downloaded"]
+            seed = entry["seed_urls_count"]
+            followed = entry["files_found_by_following"]
+            flags = entry.get("flags", [])
+            flag_str = ""
+            if flags:
+                flag_str = f"  [!] {'; '.join(flags)}"
+            print(
+                f"  {slug:<40s} {downloaded:>3d} syllabi  "
+                f"({seed} seed, {followed} followed){flag_str}"
+            )
 
     # Disk usage
     disk = result["disk_usage"]
