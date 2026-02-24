@@ -8,7 +8,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urldefrag
 
 from bs4 import BeautifulSoup
 
@@ -30,6 +30,7 @@ class BfsStats:
     max_depth_reached: int = 0
     files_found_by_following: int = 0
     course_links_found: int = 0
+    files_filtered: int = 0
 
 
 # File extensions that are direct downloads (not HTML pages to follow)
@@ -38,9 +39,35 @@ _DIRECT_FILE_EXTENSIONS = frozenset({
     ".xls", ".xlsx", ".rtf", ".odt", ".txt",
 })
 
+# URL path patterns that indicate non-syllabus content (lectures, exams, etc.)
+_JUNK_PATH_RE = re.compile(
+    r"/(lectures?|past-?exams?|exams?|midterms?|finals?|"
+    r"solutions?|quizzes?|flashcards?|homework|"
+    r"readings?/|videos?/|covid)",
+    re.IGNORECASE,
+)
+
+# File extensions that are never syllabi
+_JUNK_EXTENSIONS = frozenset({".ppt", ".pptx"})
+
+# BFS sub-page patterns to skip (irrelevant course sub-pages)
+_BFS_SKIP_PATH_RE = re.compile(
+    r"/(labs?/|calendar|debugging|editors|flashcards|videos|covid|"
+    r"staff/|ta/|office-hours)",
+    re.IGNORECASE,
+)
+
 
 class SyllabusScraper(BaseScraper):
     """Find and download syllabus files (PDFs, docs) from course/faculty pages."""
+
+    @staticmethod
+    def _is_junk_url(url: str) -> bool:
+        """Return True if the URL points to non-syllabus content (lectures, exams, PPTs)."""
+        path = urlparse(url).path.lower()
+        if any(path.endswith(ext) for ext in _JUNK_EXTENSIONS):
+            return True
+        return bool(_JUNK_PATH_RE.search(path))
 
     def scrape(
         self,
@@ -118,8 +145,17 @@ class SyllabusScraper(BaseScraper):
         files_downloaded = 0
         files_failed = 0
         files_skipped = 0
+        files_filtered = 0
 
         for url in all_urls:
+            if self._is_junk_url(url):
+                files_filtered += 1
+                logger.debug(
+                    "Filtered junk URL from downloads",
+                    extra={"school": school.slug, "url": url},
+                )
+                continue
+
             if self._skip_if_downloaded(url, metadata):
                 files_skipped += 1
                 continue
@@ -147,6 +183,9 @@ class SyllabusScraper(BaseScraper):
                         "error": str(e),
                     },
                 )
+
+        # Merge BFS-level filtered count with download-level filtered count
+        bfs_stats.files_filtered += files_filtered
 
         self._store_syllabi_stats(
             metadata, school,
@@ -181,6 +220,7 @@ class SyllabusScraper(BaseScraper):
             "max_depth_reached": bfs_stats.max_depth_reached,
             "files_found_by_following": bfs_stats.files_found_by_following,
             "course_links_found": bfs_stats.course_links_found,
+            "files_filtered": bfs_stats.files_filtered,
             "files_downloaded": files_downloaded,
             "files_failed": files_failed,
             "files_skipped": files_skipped,
@@ -196,6 +236,7 @@ class SyllabusScraper(BaseScraper):
                 "pages_followed": bfs_stats.pages_followed,
                 "files_from_following": bfs_stats.files_found_by_following,
                 "course_links_found": bfs_stats.course_links_found,
+                "files_filtered": bfs_stats.files_filtered,
                 "downloaded": files_downloaded,
                 "failed": files_failed,
                 "skipped": files_skipped,
@@ -389,8 +430,11 @@ class SyllabusScraper(BaseScraper):
         Returns:
             Tuple of (direct file URLs found, BFS statistics).
         """
+        max_files_per_page = self.config.get("syllabus_max_files_per_page", 50)
+
+        # Strip fragments from seed URLs before queuing
         queue: deque[tuple[str, int]] = deque(
-            (url, 0) for url in page_urls
+            (urldefrag(url)[0], 0) for url in page_urls
         )
         processed: set[str] = set()
         found_files: list[str] = []
@@ -434,32 +478,55 @@ class SyllabusScraper(BaseScraper):
 
             # --- Extract syllabus links (keyword-based) ---
             syl_links = self._extract_syllabus_links(html, url)
-            file_count = 0
+            page_file_count = 0
 
             for link in syl_links:
+                link = urldefrag(link)[0]
                 if self._is_direct_file(link) and is_related_domain(
                     school.url, link
                 ):
+                    if self._is_junk_url(link):
+                        stats.files_filtered += 1
+                        continue
+                    if page_file_count >= max_files_per_page:
+                        break
                     if link not in found_files_set:
                         found_files_set.add(link)
                         found_files.append(link)
                         stats.files_found_by_following += 1
-                    file_count += 1
+                    page_file_count += 1
                 elif link not in processed and depth + 1 <= max_depth:
-                    queue.append((link, depth + 1))
+                    if not _BFS_SKIP_PATH_RE.search(urlparse(link).path):
+                        queue.append((urldefrag(link)[0], depth + 1))
 
             # --- At depth > 0, also try broader file extraction ---
-            if depth > 0:
+            if depth > 0 and page_file_count < max_files_per_page:
                 broad_links = self._extract_file_links(html, url, school.url)
                 for link in broad_links:
+                    link = urldefrag(link)[0]
+                    if self._is_junk_url(link):
+                        stats.files_filtered += 1
+                        continue
+                    if page_file_count >= max_files_per_page:
+                        break
                     if link not in found_files_set:
                         found_files_set.add(link)
                         found_files.append(link)
                         stats.files_found_by_following += 1
-                    file_count += 1
+                    page_file_count += 1
+
+            if page_file_count >= max_files_per_page:
+                logger.warning(
+                    "Per-page file cap reached",
+                    extra={
+                        "school": school.slug,
+                        "page_url": url,
+                        "cap": max_files_per_page,
+                    },
+                )
 
             # --- If few files found, try course link extraction ---
-            if file_count < 3 and depth < max_depth:
+            if page_file_count < 3 and depth < max_depth:
                 course_links = self._extract_course_links(
                     html, url, school.url
                 )
@@ -475,7 +542,10 @@ class SyllabusScraper(BaseScraper):
                         },
                     )
                 for link in course_links:
-                    if link not in processed:
+                    link = urldefrag(link)[0]
+                    if link not in processed and not _BFS_SKIP_PATH_RE.search(
+                        urlparse(link).path
+                    ):
                         queue.append((link, depth + 1))
 
             if found_files or syl_links:
@@ -485,7 +555,7 @@ class SyllabusScraper(BaseScraper):
                         "school": school.slug,
                         "page_url": url,
                         "depth": depth,
-                        "files_found": file_count,
+                        "files_found": page_file_count,
                     },
                 )
 
@@ -495,6 +565,7 @@ class SyllabusScraper(BaseScraper):
                 "school": school.slug,
                 "pages_followed": stats.pages_followed,
                 "total_files_found": stats.files_found_by_following,
+                "files_filtered": stats.files_filtered,
                 "max_depth_reached": stats.max_depth_reached,
                 "course_links_found": stats.course_links_found,
             },

@@ -68,7 +68,18 @@ class HttpClient:
         self.rate_limiter.wait(domain)
 
         kwargs.setdefault("timeout", self.timeout)
-        response = self._session.get(url, **kwargs)
+        try:
+            response = self._session.get(url, **kwargs)
+        except requests.exceptions.SSLError:
+            if domain.endswith(".edu"):
+                logger.warning(
+                    "SSL error on .edu domain, retrying without verification",
+                    extra={"url": url, "domain": domain},
+                )
+                kwargs["verify"] = False
+                response = self._session.get(url, **kwargs)
+            else:
+                raise
         response.raise_for_status()
         return response
 
@@ -91,7 +102,18 @@ class HttpClient:
         tmp_path = dest.with_suffix(dest.suffix + ".tmp")
 
         try:
-            response = self._session.get(url, **kwargs)
+            try:
+                response = self._session.get(url, **kwargs)
+            except requests.exceptions.SSLError:
+                if domain.endswith(".edu"):
+                    logger.warning(
+                        "SSL error on .edu domain, retrying without verification",
+                        extra={"url": url, "domain": domain},
+                    )
+                    kwargs["verify"] = False
+                    response = self._session.get(url, **kwargs)
+                else:
+                    raise
             response.raise_for_status()
 
             with open(tmp_path, "wb") as f:

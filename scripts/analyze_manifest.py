@@ -198,6 +198,7 @@ def analyze(output_dir: Path) -> dict:
         entry["seed_files_count"] = syllabi_phase.get("seed_files_count", 0)
         entry["files_downloaded"] = syllabi_phase.get("files_downloaded", 0)
         entry["files_failed"] = syllabi_phase.get("files_failed", 0)
+        entry["files_filtered"] = syllabi_phase.get("files_filtered", 0)
         entry["files_found_by_following"] = syllabi_phase.get(
             "files_found_by_following", 0
         )
@@ -297,13 +298,15 @@ def print_human_readable(result: dict) -> None:
             downloaded = entry["files_downloaded"]
             seed = entry["seed_urls_count"]
             followed = entry["files_found_by_following"]
+            filtered = entry.get("files_filtered", 0)
             flags = entry.get("flags", [])
             flag_str = ""
             if flags:
                 flag_str = f"  [!] {'; '.join(flags)}"
+            filtered_str = f", {filtered} filtered" if filtered else ""
             print(
                 f"  {slug:<40s} {downloaded:>3d} syllabi  "
-                f"({seed} seed, {followed} followed){flag_str}"
+                f"({seed} seed, {followed} followed{filtered_str}){flag_str}"
             )
 
     # Disk usage

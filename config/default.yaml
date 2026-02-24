@@ -29,6 +29,7 @@ catalog_max_followed: 40
 
 syllabus_follow_depth: 2
 syllabus_max_followed: 50
+syllabus_max_files_per_page: 50
 
 logging:
   level: "INFO"

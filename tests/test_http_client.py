@@ -291,3 +291,86 @@ class TestRetryConfig:
         assert 502 in adapter.max_retries.status_forcelist
         assert 503 in adapter.max_retries.status_forcelist
         assert 504 in adapter.max_retries.status_forcelist
+
+
+class TestSSLFallback:
+    """Tests for SSL verify=False fallback on .edu domains."""
+
+    def test_ssl_fallback_on_edu_domain_get(
+        self, client: HttpClient, mock_rate_limiter: MagicMock
+    ) -> None:
+        """SSLError on .edu domain retried with verify=False in get()."""
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            client._session,
+            "get",
+            side_effect=[
+                requests.exceptions.SSLError("cert verify failed"),
+                mock_response,
+            ],
+        ) as mock_get:
+            resp = client.get("https://eecs.psu.edu/courses")
+
+        assert resp is mock_response
+        assert mock_get.call_count == 2
+        # Second call should have verify=False
+        _, kwargs = mock_get.call_args_list[1]
+        assert kwargs["verify"] is False
+
+    def test_ssl_fallback_not_on_non_edu_get(
+        self, client: HttpClient, mock_rate_limiter: MagicMock
+    ) -> None:
+        """SSLError on .com domain raises normally in get()."""
+        with patch.object(
+            client._session,
+            "get",
+            side_effect=requests.exceptions.SSLError("cert verify failed"),
+        ):
+            with pytest.raises(requests.exceptions.SSLError):
+                client.get("https://example.com/page")
+
+    def test_ssl_fallback_on_edu_domain_download(
+        self,
+        client: HttpClient,
+        mock_rate_limiter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """SSLError on .edu domain retried with verify=False in download()."""
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = [b"data"]
+
+        with patch.object(
+            client._session,
+            "get",
+            side_effect=[
+                requests.exceptions.SSLError("cert verify failed"),
+                mock_response,
+            ],
+        ) as mock_get:
+            dest = tmp_path / "file.pdf"
+            result = client.download("https://eecs.psu.edu/syllabus.pdf", dest)
+
+        assert result == dest
+        assert dest.read_bytes() == b"data"
+        assert mock_get.call_count == 2
+        _, kwargs = mock_get.call_args_list[1]
+        assert kwargs["verify"] is False
+
+    def test_ssl_fallback_not_on_non_edu_download(
+        self,
+        client: HttpClient,
+        mock_rate_limiter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """SSLError on .com domain raises normally in download()."""
+        with patch.object(
+            client._session,
+            "get",
+            side_effect=requests.exceptions.SSLError("cert verify failed"),
+        ):
+            dest = tmp_path / "fail.pdf"
+            with pytest.raises(requests.exceptions.SSLError):
+                client.download("https://example.com/fail.pdf", dest)

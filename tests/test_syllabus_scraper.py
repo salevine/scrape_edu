@@ -1286,3 +1286,243 @@ class TestScrapeStatsInMetadata:
         assert record.school == school.slug
         assert record.downloaded == 2
         assert record.failed == 0
+
+
+# ------------------------------------------------------------------
+# Tests — _is_junk_url()
+# ------------------------------------------------------------------
+
+
+class TestIsJunkUrl:
+    """Test the _is_junk_url classifier."""
+
+    def test_rejects_lectures(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/lectures/lecture1.ppt"
+        )
+
+    def test_rejects_past_exams(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/past-exams/midterm.pdf"
+        )
+
+    def test_rejects_exams_path(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/exams/final2024.pdf"
+        )
+
+    def test_rejects_ppt_extension(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/slides/overview.ppt"
+        )
+
+    def test_rejects_pptx_extension(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/slides/overview.pptx"
+        )
+
+    def test_accepts_syllabus_pdf(self) -> None:
+        assert not SyllabusScraper._is_junk_url(
+            "https://example.edu/syllabi/cs101.pdf"
+        )
+
+    def test_accepts_course_pdf(self) -> None:
+        assert not SyllabusScraper._is_junk_url(
+            "https://example.edu/courses/cs201/outline.pdf"
+        )
+
+    def test_rejects_homework(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/homework/hw1.pdf"
+        )
+
+    def test_rejects_solutions(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/solutions/sol1.pdf"
+        )
+
+    def test_rejects_quizzes(self) -> None:
+        assert SyllabusScraper._is_junk_url(
+            "https://example.edu/quizzes/quiz1.pdf"
+        )
+
+
+# ------------------------------------------------------------------
+# Tests — BFS fragment stripping
+# ------------------------------------------------------------------
+
+
+class TestBfsFragmentStripping:
+    """Test that URL fragments are stripped in BFS."""
+
+    def test_fragments_collapsed_to_one_page(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """page.html#overview and page.html#goals count as 1 page."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        page_html = """
+        <html><body>
+        <a href="/about">About Page</a>
+        </body></html>
+        """
+        mock_response = MagicMock()
+        mock_response.text = page_html
+        mock_http_client.get.return_value = mock_response
+
+        # Feed two URLs that differ only by fragment
+        result, stats = scraper._follow_syllabus_pages(
+            [
+                "https://www.mit.edu/page.html#overview",
+                "https://www.mit.edu/page.html#goals",
+            ],
+            school,
+            max_followed=20,
+        )
+
+        # Should only fetch once (fragments stripped → same URL)
+        assert mock_http_client.get.call_count == 1
+        assert stats.pages_followed == 1
+
+
+# ------------------------------------------------------------------
+# Tests — BFS sub-page skip filtering
+# ------------------------------------------------------------------
+
+
+class TestBfsSkipSubpages:
+    """Test that irrelevant sub-pages are skipped in BFS queue."""
+
+    def test_skips_labs_calendar_staff(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """/labs/, /calendar/, /staff/ not added to BFS queue."""
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+
+        seed_html = """
+        <html><body>
+        <a href="/labs/1/">Lab 1</a>
+        <a href="/calendar/">Calendar</a>
+        <a href="/staff/">Staff</a>
+        <a href="/syllabi/archive">View Syllabi</a>
+        </body></html>
+        """
+        archive_html = """
+        <html><body>
+        <a href="/about">About the department</a>
+        </body></html>
+        """
+
+        responses = []
+        for html in [seed_html, archive_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        result, stats = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/course/"],
+            school,
+            max_followed=20,
+            max_depth=2,
+        )
+
+        # Only 2 fetches: seed + syllabi/archive (not labs, calendar, staff)
+        assert mock_http_client.get.call_count == 2
+        # Verify the fetched URLs don't include labs/calendar/staff
+        fetched_urls = [c.args[0] for c in mock_http_client.get.call_args_list]
+        assert not any("/labs/" in u for u in fetched_urls)
+        assert not any("/calendar/" in u for u in fetched_urls)
+        assert not any("/staff/" in u for u in fetched_urls)
+
+
+# ------------------------------------------------------------------
+# Tests — Per-page file cap
+# ------------------------------------------------------------------
+
+
+class TestBfsPerPageFileCap:
+    """Test that per-page file cap limits collection from a single page."""
+
+    def test_caps_files_from_single_page(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+    ) -> None:
+        """Page with 200 file links only yields max_files_per_page."""
+        scraper = SyllabusScraper(
+            http_client=mock_http_client,
+            config={"syllabus_max_files_per_page": 10},
+        )
+
+        # Page at depth 1 with 200 PDF links (broad extraction)
+        links = "\n".join(
+            f'<a href="/files/doc{i}.pdf">Doc {i}</a>' for i in range(200)
+        )
+        seed_html = """
+        <html><body>
+        <a href="/archive/syllabi">View Syllabi</a>
+        </body></html>
+        """
+        archive_html = f"<html><body>{links}</body></html>"
+
+        responses = []
+        for html in [seed_html, archive_html]:
+            r = MagicMock()
+            r.text = html
+            responses.append(r)
+        mock_http_client.get.side_effect = responses
+
+        result, _ = scraper._follow_syllabus_pages(
+            ["https://www.mit.edu/syllabi"],
+            school,
+            max_followed=50,
+            max_depth=2,
+        )
+
+        # Should be capped at 10
+        assert len(result) == 10
+
+
+# ------------------------------------------------------------------
+# Tests — Junk filtering in download loop
+# ------------------------------------------------------------------
+
+
+class TestScrapeFiltersJunk:
+    """Test that junk URLs are filtered in the download loop."""
+
+    def test_junk_urls_skipped_in_download(
+        self,
+        mock_http_client: MagicMock,
+        school: School,
+        school_dir: Path,
+    ) -> None:
+        """Junk URLs skipped in download loop, counted in stats."""
+        metadata = SchoolMetadata(school_dir)
+        metadata._metadata["phases"] = {
+            "discovery": {
+                "syllabus_urls": [
+                    "https://www.mit.edu/syllabi/cs101.pdf",
+                    "https://www.mit.edu/lectures/lecture1.ppt",
+                    "https://www.mit.edu/past-exams/midterm.pdf",
+                ],
+            },
+        }
+        mock_http_client.download.return_value = Path("dummy.pdf")
+
+        scraper = SyllabusScraper(http_client=mock_http_client, config={})
+        scraper.scrape(school, school_dir, metadata)
+
+        # Only cs101.pdf should be downloaded (2 junk filtered)
+        assert mock_http_client.download.call_count == 1
+        called_url = mock_http_client.download.call_args.args[0]
+        assert "cs101.pdf" in called_url
+
+        syllabi = metadata._metadata["phases"]["syllabi"]
+        assert syllabi["files_filtered"] == 2
+        assert syllabi["files_downloaded"] == 1
